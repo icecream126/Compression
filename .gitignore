@@ -1,0 +1,5 @@
+.vscode/
+lightning_logs/
+wandb/
+*.pyc
+*.nc

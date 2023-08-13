@@ -15,10 +15,26 @@ import pyinterp
 import pyinterp.backends.xarray
 from scipy.interpolate import RegularGridInterpolator
 from tqdm import trange, tqdm
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+
+from WeatherBench.src.activations.swinr import SphericalGaborLayer
+from WeatherBench.src.activations.wire import ComplexGaborLayer
+from WeatherBench.src.activations.siren import SineLayer
+from WeatherBench.src.activations.shinr import SphericalHarmonicsLayer
 import sys, os
 
 
 YEAR = 2016
+
+activation_dict = {
+    'relu': nn.ReLU,
+    'siren': SineLayer,
+    'wire': ComplexGaborLayer,
+    'shinr': SphericalHarmonicsLayer,
+    'swinr': SphericalGaborLayer,
+    'gelu': nn.GELU
+}
 
 class ERA5stat():
     def __init__(self, file_name_mean, file_name_std, data_path, variable, grid_type):
@@ -61,8 +77,8 @@ class WeatherBenchDataset_sampling(Dataset):
         self.nbatch = nbatch
         self.nsample = nsample
         self.rndeng = torch.quasirandom.SobolEngine(dimension=3, scramble=True)
-        self.mean = self.ds[variable].mean(dim=["time"]).to_numpy()
-        self.std = (self.ds[variable].max(dim=["time"]) - self.ds[variable].min(dim=["time"])).to_numpy()
+        self.mean = np.array(self.ds[variable].mean(dim=["time"]))
+        self.std = (self.ds[variable].max(dim=["time"]) - np.array(self.ds[variable].min(dim=["time"])))
         self.interp_mean = RegularGridInterpolator((self.ds.lat, self.ds.lon), self.mean, bounds_error=False, fill_value=None)
         self.interp_std = RegularGridInterpolator((self.ds.lat, self.ds.lon), self.std, bounds_error=False, fill_value=None)
     
@@ -86,13 +102,13 @@ class WeatherBenchDataset_sampling(Dataset):
             return coord, var_sampled, mean, std
 
     def getslice(self, tind, pind):
-        lat_v = torch.as_tensor(self.ds.lat.to_numpy())
-        lon_v = torch.as_tensor(self.ds.lon.to_numpy())
+        lat_v = torch.as_tensor(np.array(self.ds.lat))
+        lon_v = torch.as_tensor(np.array(self.ds.lon))
         lat, lon = torch.meshgrid((lat_v, lon_v), indexing="ij")
         p = torch.zeros_like(lat) + float(self.ds.level.mean())
         t = torch.zeros_like(lat) + float(tind)
         coord = torch.stack((t, p, lat, lon), dim=-1).unsqueeze(0).to(torch.float32)
-        var = torch.as_tensor(self.ds[self.variable].isel(time=tind).to_numpy()).unsqueeze(-1).unsqueeze(0).to(torch.float32)
+        var = torch.as_tensor(np.array(self.ds[self.variable].isel(time=tind))).unsqueeze(-1).unsqueeze(0).to(torch.float32)
         mean = torch.as_tensor(self.mean).reshape(var.shape).to(torch.float32)
         std = torch.as_tensor(self.std).reshape(var.shape).to(torch.float32)
         return coord, var, mean, std
@@ -122,7 +138,7 @@ class ERA5Dataset_sampling(Dataset):
             rnds = self.rndeng.draw(self.nsample)
             time = rnds[:, 0] * (self.ntime - 1)
             #pind = (torch.rand((self.nsample,)) * (1000-10) + 10)
-            pind = torch.as_tensor(self.ds.level.to_numpy(), dtype=torch.float32)[torch.randperm(self.nsample) % len(self.ds.level)]
+            pind = torch.as_tensor(np.array(self.ds.level), dtype=torch.float32)[torch.randperm(self.nsample) % len(self.ds.level)]
             #latind = (torch.rand((self.nsample,)) * 180 - 90)
             # http://corysimon.github.io/articles/uniformdistn-on-sphere/
             latind = 90 - 180/math.pi*torch.acos(1 - 2 * rnds[:, 1])
@@ -141,13 +157,13 @@ class ERA5Dataset_sampling(Dataset):
                 return coord, var_sampled, mean, std
 
     def getslice(self, tind, pind):
-        lat_v = torch.as_tensor(self.ds.latitude.to_numpy())
-        lon_v = torch.as_tensor(self.ds.longitude.to_numpy())
+        lat_v = torch.as_tensor(np.array(self.ds.latitude))
+        lon_v = torch.as_tensor(np.array(self.ds.longitude))
         lat, lon = torch.meshgrid((lat_v, lon_v), indexing="ij")
-        p = torch.zeros_like(lat) + self.ds.level.to_numpy()[pind]
+        p = torch.zeros_like(lat) + np.array(self.ds.level)[pind]
         t = torch.zeros_like(lat) + float(tind)
         coord = torch.stack((t, p, lat, lon), dim=-1).to(torch.float32)
-        var = torch.as_tensor(self.ds.isel(time=tind, level=pind).to_numpy()).to(torch.float32).unsqueeze(-1)
+        var = torch.as_tensor(np.array(self.ds.isel(time=tind, level=pind))).to(torch.float32).unsqueeze(-1)
         return coord.unsqueeze(0), var.unsqueeze(0)
 
 class FourierFeature(nn.Module):
@@ -191,12 +207,13 @@ class InvScale(nn.Module):
         return (z_normalized / factor)*std + mean
 
 class ResBlock(nn.Module):
-    def __init__(self, width, use_batchnorm=True, use_skipconnect=True):
+    def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True):
         super(ResBlock, self).__init__()
         self.fc1 = nn.Linear(width, width, bias=False)
         self.fc2 = nn.Linear(width, width, bias=True)
         self.use_batchnorm = use_batchnorm
         self.use_skipconnect = use_skipconnect
+        self.activation = activation
         if use_batchnorm:
             self.bn1 = nn.BatchNorm1d(width)
             self.bn2 = nn.BatchNorm1d(width)
@@ -206,11 +223,13 @@ class ResBlock(nn.Module):
         x = x_original
         if self.use_batchnorm:
             x = self.bn1(x)
-        x = F.gelu(x)
+        x = self.activation(x)
+        # x = F.gelu(x)
         x = self.fc1(x)
         if self.use_batchnorm:
             x = self.bn2(x)
-        x = F.gelu(x)
+        x = self.activation(x)
+        # x = F.gelu(x)
         x = self.fc2(x)
         if self.use_skipconnect:
             return x + x_original
@@ -243,6 +262,15 @@ class FitNet(nn.Module):
     def __init__(self, args):
         super(FitNet, self).__init__()
         self.args = args
+        # self.swavelet = SphericalGaborLayer
+        # self.relu = ReLULayer
+        # if args.first_activation=='wire':
+        #     self.first_activation = ComplexGaborLayer()
+        # elif args.first_activation=='relu':
+        #     self.first_activation = nn.
+        self.first_activation = activation_dict[args.first_activation]()
+        self.activation = activation_dict[args.activation]()
+        
         if args.use_invscale:
             self.invscale = InvScale()
         if args.use_xyztransform:
@@ -255,6 +283,7 @@ class FitNet(nn.Module):
             self.embed_t = MultiResolutionEmbedding(args.tembed_size, args.ntfeature, args.tresolution, args.tscale)
         else:
             ne = 0
+        # args.use_fourierfeature=False
         if args.use_fourierfeature:
             self.fourierfeature_t = FourierFeature(args.sigma, 1, args.ntfeature)
             self.fourierfeature_p = FourierFeature(args.sigma, 1, args.nfeature)
@@ -265,7 +294,7 @@ class FitNet(nn.Module):
         self.normalize = NormalizeInput(args.tscale, args.zscale)     
         self.depth = args.depth
         self.fci = nn.Linear(nf + ne, args.width)
-        self.fcs = nn.ModuleList([ResBlock(args.width, args.use_batchnorm, args.use_skipconnect) for i in range(args.depth)])
+        self.fcs = nn.ModuleList([ResBlock(args.width, self.activation, args.use_batchnorm, args.use_skipconnect) for i in range(args.depth)])
         self.fco = nn.Linear(args.width, 1)
 
         self.use_xyztransform = self.args.use_xyztransform
@@ -274,22 +303,27 @@ class FitNet(nn.Module):
         self.use_invscale = self.args.use_invscale
 
     def forward(self, coord):
-        batch_size = coord.shape[:-1]
-        x = self.normalize(coord)
+        # coord.shape : torch.Size([1, 361, 720, 4])
+        batch_size = coord.shape[:-1] # torch.Size([1, 361, 720])
+        x = self.normalize(coord) # torch.Size([1, 361, 720, 5])
         if self.use_xyztransform:
             x = self.lonlat2xyz(x)
         if self.use_fourierfeature:
-            t = x[..., 0:1]
-            p = x[..., 1:2]
-            s = x[..., 2:]
-            x = torch.cat((self.fourierfeature_t(t), self.fourierfeature_p(p), self.fourierfeature_s(s)), dim=-1)
+            t = x[..., 0:1] # torch.Size([1, 361, 720, 1])
+            p = x[..., 1:2] # torch.Size([1, 361, 720, 1])
+            s = x[..., 2:] # torch.Size([1, 361, 720, 1])
+            x = torch.cat((self.fourierfeature_t(t), self.fourierfeature_p(p), self.fourierfeature_s(s)), dim=-1) # torch.Size([1, 361, 720, 544])
         if self.use_tembedding:
             x = torch.cat((self.embed_t(coord[..., 0:1]), x), dim=-1)
-        x = F.gelu(self.fci(x))
+        
+        x = self.fci(x)
+        x = self.first_activation(x)
+        # x = F.gelu(self.fci(x))
         x = x.flatten(end_dim=-2) # batchnorm 1d only accepts (N, C) shape
         for fc in self.fcs:        
             x = fc(x)
-        x = F.gelu(x)
+        x = self.activation(x)
+        # x = F.gelu(x)
         x = self.fco(x)
         x = x.view(batch_size).unsqueeze(-1)
         if self.use_invscale or self.args.use_stat:
@@ -409,10 +443,10 @@ def test_on_wholedataset(file_name, data_path, output_path, output_file, model, 
     ds_pred = xr.zeros_like(ds[variable]) - 9999
     ds = ds.assign_coords(time=ds.time.dt.dayofyear-1)
     dtype = model.input_type
-    lat = torch.tensor(ds.latitude.to_numpy(), dtype=dtype, device=device)
-    lon = torch.tensor(ds.longitude.to_numpy(), dtype=dtype, device=device)
-    ps = ds.level.to_numpy().astype(float)
-    ts = ds.time.to_numpy().astype(float)
+    lat = torch.tensor(np.array(ds.latitude), dtype=dtype, device=device)
+    lon = torch.tensor(np.array(ds.longitude), dtype=dtype, device=device)
+    ps = np.array(ds.level).astype(float)
+    ts = np.array(ds.time).astype(float)
     model = model.to(device)
     max_error = np.zeros(ps.shape[0])
     for i in trange(ts.shape[0]):
@@ -437,11 +471,11 @@ def generate_outputs(model, output_path, output_file, device="cuda"):
     out_ds = xr.zeros_like(ds)
     #mean = float(ds[variable].mean())
     #std = float(ds[variable].max() - ds[variable].min())
-    mean = ds[variable].mean(dim=["time"]).to_numpy()
-    std = (ds[variable].max(dim=["time"]) - ds[variable].min(dim=["time"])).to_numpy()
+    mean = np.array(ds[variable].mean(dim=["time"]))
+    std = (ds[variable].max(dim=["time"]) - np.array(ds[variable].min(dim=["time"])))
     assert len(ds[variable].shape) == 3
-    lon_v = torch.as_tensor(ds.lon.to_numpy(), device=device, dtype=torch.float32)
-    lat_v = torch.as_tensor(ds.lat.to_numpy(), device=device, dtype=torch.float32)
+    lon_v = torch.as_tensor(np.array(ds.lon), device=device, dtype=torch.float32)
+    lat_v = torch.as_tensor(np.array(ds.lat), device=device, dtype=torch.float32)
     lat, lon = torch.meshgrid((lat_v, lon_v), indexing="ij")
     p = torch.zeros_like(lat, device=device) + float(ds.level.mean())
     t = torch.zeros_like(lat, device=device)
@@ -452,7 +486,7 @@ def generate_outputs(model, output_path, output_file, device="cuda"):
         with torch.no_grad():
             var_pred = model(coord).squeeze(-1).cpu().numpy() * 0.5 * 1.4 * std + mean
             out_ds[variable].data[it, :, :] = var_pred[:, :]
-            var = ds[variable].isel(time=it).to_numpy()
+            var = np.array(ds[variable].isel(time=it))
             errors[it] = np.abs(var_pred - var).max()
     file_name = f"{output_path}/{output_file}"
     print(f"Saving to {file_name}")
@@ -461,6 +495,25 @@ def generate_outputs(model, output_path, output_file, device="cuda"):
 
 def main(args):
     model = FitNetModule(args)
+    
+    # Training
+    lrmonitor_cb = LearningRateMonitor(logging_interval="step")
+    checkpoint_cb = ModelCheckpoint(
+        monitor="valid_loss" if args.validation else "train_loss",
+        mode="min",
+        filename="best"
+    )
+
+    logger = WandbLogger(
+        config=args, 
+        project="Compression",
+        name='comp'+args.first_activation+'/'+args.dataset
+    )
+
+    logger.experiment.log(
+        {"CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", None)}
+    )
+    
     if args.ckpt_path != "":
         model_loaded = FitNetModule.load_from_checkpoint(args.ckpt_path)
         model.model.load_state_dict(model_loaded.model.state_dict())
@@ -468,6 +521,7 @@ def main(args):
     trainer = None
     if not args.notraining:
         strategy = pl.strategies.DDPStrategy(process_group_backend="nccl", find_unused_parameters=False)
+        # trainer = pl.Trainer(log_every_n_steps=1, callbacks=[lrmonitor_cb, checkpoint_cb], logger = logger, accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
         trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
         trainer.fit(model)
 
@@ -492,6 +546,10 @@ def main(args):
     
 if __name__ == "__main__":
     parser = ArgumentParser()
+    parser.add_argument('--dataset', default='ERA5', type=str)
+    parser.add_argument('--validation', default=True, type=bool)
+    parser.add_argument('--first_activation', default='gelu', type=str)
+    parser.add_argument('--activation', default='gelu', type=str)
     parser.add_argument("--num_gpu", default=-1, type=int)
     parser.add_argument("--nepoches", default=20, type=int)
     parser.add_argument("--batch_size", default=3, type=int)
@@ -513,7 +571,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_batchnorm', action='store_true')
     parser.add_argument('--use_skipconnect', action='store_true')
     parser.add_argument('--use_invscale', action='store_true')
-    parser.add_argument('--use_fourierfeature', action='store_true')
+    parser.add_argument('--use_fourierfeature', action='store_true', default=False)
     parser.add_argument('--use_tembedding', action='store_true')
     parser.add_argument("--tembed_size", default=400, type=int) # number of time steps
     parser.add_argument("--tresolution", default=24, type=float)
@@ -533,5 +591,5 @@ if __name__ == "__main__":
         args.use_invscale = not args.use_stat
         args.use_skipconnect = True
         args.use_xyztransform = True
-        args.use_fourierfeature = True
+        args.use_fourierfeature = False
     main(args)
