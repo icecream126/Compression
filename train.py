@@ -23,6 +23,8 @@ from WeatherBench.src.activations.wire import ComplexGaborLayer
 from WeatherBench.src.activations.siren import SineLayer
 from WeatherBench.src.activations.shinr import SphericalHarmonicsLayer
 import sys, os
+import wandb
+wandb.init()
 
 
 YEAR = 2016
@@ -461,6 +463,10 @@ def test_on_wholedataset(file_name, data_path, output_path, output_file, model, 
                 ds_pred.data[i, j, :, :] = var_pred.cpu().numpy().squeeze(-1)
                 max_error[j] = max(max_error[j], np.abs(ds_pred.data[i, j, :, :] - ds[variable][i, j, :, :]).max())
     print(np.array_repr(max_error))
+    for j in range(ps.shape[0]):
+        wandb.log({'p-'+str(pj)+'-'+str(j)+'_max_mae': max_error[j]})
+    # wandb.log({'sum_max_mae':np.sum(max_error)})
+    wandb.log({'avg_max_mae':np.mean(max_error)})
     ds_pred.to_netcdf(f"{output_path}/{output_file}")
 
 def generate_outputs(model, output_path, output_file, device="cuda"):
@@ -521,8 +527,8 @@ def main(args):
     trainer = None
     if not args.notraining:
         strategy = pl.strategies.DDPStrategy(process_group_backend="nccl", find_unused_parameters=False)
-        # trainer = pl.Trainer(log_every_n_steps=1, callbacks=[lrmonitor_cb, checkpoint_cb], logger = logger, accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
-        trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
+        trainer = pl.Trainer(log_every_n_steps=1, callbacks=[lrmonitor_cb, checkpoint_cb], logger = logger, accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
+        # trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
         trainer.fit(model)
 
     model.eval()
@@ -534,6 +540,7 @@ def main(args):
         quantized_size = get_model_size_mb(model)
         model.model.fcs = model.model.fcs.float()
         print(f"Quantized (FP16) size (MB): {quantized_size}")
+        wandb.log({'quantized_size':quantized_size})
 
     if args.testing and ((not trainer) or trainer.is_global_zero):
         test_on_wholedataset(model.args.file_name, model.args.data_path, model.args.output_path, model.args.output_file, model, variable=model.args.variable)
