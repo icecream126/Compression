@@ -6,19 +6,18 @@ from .relu import ReLULayer
 import sys
 sys.path.append('/home/khm/NNCompression/WeatherBench/src')
 from utils.spherical_harmonics import get_spherical_harmonics
+from utils.change_coord_sys import to_spherical
 
 class SphericalHarmonicsLayer(nn.Module):
     def __init__(
             self, 
             max_order, 
-            time,
-            omega,
+            omega=10,
             **kwargs,
         ):
         super().__init__()
         self.max_order = max_order
         self.hidden_dim = (max_order+1)**2
-        self.time = time
         self.omega = omega
 
         self.linear_t = nn.Linear(1, self.hidden_dim)
@@ -28,15 +27,17 @@ class SphericalHarmonicsLayer(nn.Module):
             self.linear_p.weight.uniform_(-1, 1)
         
     def forward(self, input):
-        theta = input[..., 2:3]
-        phi = input[..., 3:4]
+        points = to_spherical(input[...,2:])
+        theta, phi = points[...,0], points[...,1 ]
+        
+
 
         sh_list = []
         for l in range(self.max_order+1):
             sh = get_spherical_harmonics(l, phi, theta)
             sh_list.append(sh)
 
-        out = torch.cat(sh_list, dim=-1)
+        out = torch.cat(sh_list, dim=-1).squeeze(-2)
 
         time = input[..., 0:1]
         pressure = input[..., 1:2]
@@ -45,6 +46,7 @@ class SphericalHarmonicsLayer(nn.Module):
         
         omega_t = self.omega * lin_t
         omega_p = self.omega * lin_p
+
         out = out * torch.sin(omega_t) * torch.sin(omega_p)
         return out
 

@@ -1,0 +1,32 @@
+program: src/main.py
+project: SINR
+name: sun360/swinr/5
+entity: postech_sinr
+method: bayes
+metric:
+  name: min_valid_loss
+  goal: minimize
+parameters:
+  omega:
+    min: 0.05
+    max: 20.
+  sigma:
+    min: 0.05
+    max: 20.
+  hidden_dim:
+    values: [64, 128, 256, 512]
+  lr:
+    min: 0.0001
+    max: 0.01
+command:
+  - python
+  - ${program}
+  - ${args}
+  - --dataset=sun360
+  - --model=swinr
+  - --max_epoch=120
+  - --skip
+  - --panorama_idx=5
+  - --batch_size=32
+  - --train_ratio=0.25
+  - --plot

@@ -9,7 +9,7 @@ class SphericalGaborLayer(nn.Module):
     def __init__(
             self, 
             width=512,
-            omega=10,
+            omega=0.01,
             sigma=0.1,
             **kwargs,
         ):
@@ -33,9 +33,10 @@ class SphericalGaborLayer(nn.Module):
         self.linear_p = nn.Linear(1, self.out_dim)
 
     def forward(self, input):
-        theta = input[...,2:3]
-        phi = input[...,3:4]
-        points = to_cartesian(theta, phi)
+        # theta = input[...,2:3]
+        # phi = input[...,3:4]
+        # points = to_cartesian(theta, phi)
+        points = input[...,2:]
 
         zeros = torch.zeros(self.out_dim, device=points.device)
         ones = torch.ones(self.out_dim, device=points.device)
@@ -85,19 +86,19 @@ class SphericalGaborLayer(nn.Module):
 
         out = freq_term * gauss_term
 
-        if self.time:
-            time = input[..., 0:1]
-            pressure = input[..., 1:2]
-            lin_t = self.linear_t(time)
-            lin_p = self.linear_p(time)
-            
-            omega_t = self.omega * lin_t
-            sigma_t = self.sigma * lin_t
-            omega_p = self.omega * lin_p
-            sigma_p = self.sigma * lin_p
-            time_term = torch.exp(1j*omega_t - sigma_t.square())
-            pressure_term = torch.exp(1j*omega_p - sigma_p.square())
-            out = out * time_term * pressure_term
+        time = input[..., 0:1]
+        pressure = input[..., 1:2]
+        lin_t = self.linear_t(time)
+        lin_p = self.linear_p(time)
+        
+        omega_t = self.omega * lin_t
+        sigma_t = self.sigma * lin_t
+        omega_p = self.omega * lin_p
+        sigma_p = self.sigma * lin_p
+        time_term = torch.exp(1j*omega_t - sigma_t.square())
+        pressure_term = torch.exp(1j*omega_p - sigma_p.square())
+        out = out.squeeze(2)
+        out = out * time_term * pressure_term
         return out.real
     
 

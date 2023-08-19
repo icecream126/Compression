@@ -24,7 +24,6 @@ from WeatherBench.src.activations.siren import SineLayer
 from WeatherBench.src.activations.shinr import SphericalHarmonicsLayer
 import sys, os
 import wandb
-wandb.init()
 
 
 YEAR = 2016
@@ -141,7 +140,7 @@ class ERA5Dataset_sampling(Dataset):
             time = rnds[:, 0] * (self.ntime - 1)
             #pind = (torch.rand((self.nsample,)) * (1000-10) + 10)
             pind = torch.as_tensor(np.array(self.ds.level), dtype=torch.float32)[torch.randperm(self.nsample) % len(self.ds.level)]
-            #latind = (torch.rand((self.nsample,)) * 180 - 90)
+            # latind = (torch.rand((self.nsample,)) * 180 - 90)
             # http://corysimon.github.io/articles/uniformdistn-on-sphere/
             latind = 90 - 180/math.pi*torch.acos(1 - 2 * rnds[:, 1])
             lonind = (rnds[:, 2] * 360)
@@ -224,6 +223,7 @@ class ResBlock(nn.Module):
         # x shape: (batch_size, width)
         x = x_original
         if self.use_batchnorm:
+
             x = self.bn1(x)
         x = self.activation(x)
         # x = F.gelu(x)
@@ -270,9 +270,21 @@ class FitNet(nn.Module):
         #     self.first_activation = ComplexGaborLayer()
         # elif args.first_activation=='relu':
         #     self.first_activation = nn.
-        self.first_activation = activation_dict[args.first_activation]()
-        self.activation = activation_dict[args.activation]()
+        if args.first_activation=='swinr':
+            self.first_activation = activation_dict[args.first_activation](width = args.width)
+        elif args.first_activation=='wire':
+            self.first_activation = activation_dict[args.first_activation](width = args.width, is_first=True)
+        elif args.first_activation=='shinr':
+            self.first_activation = activation_dict[args.first_activation](max_order = args.max_order)
+            args.width = (args.max_order+1)**2
+        else:
+            self.first_activation = activation_dict[args.first_activation]()
         
+        if args.activation=='wire': 
+            self.activation = activation_dict[args.activation](is_first=False)
+        else:
+            self.activation = activation_dict[args.activation]()
+            
         if args.use_invscale:
             self.invscale = InvScale()
         if args.use_xyztransform:
@@ -318,13 +330,18 @@ class FitNet(nn.Module):
         if self.use_tembedding:
             x = torch.cat((self.embed_t(coord[..., 0:1]), x), dim=-1)
         
-        x = self.fci(x)
+        if args.first_activation=='siren' or args.first_activation=='relu' or args.first_activation=='gelu' or args.first_activation=='wire':
+            x = self.fci(x) # torch.Size([1,361,720,5]) -> torch.Size([1, 361, 720, 64])
+        # print('before x : ',x.shape)
         x = self.first_activation(x)
+        # print('after x : ',x.shape)
         # x = F.gelu(self.fci(x))
         x = x.flatten(end_dim=-2) # batchnorm 1d only accepts (N, C) shape
         for fc in self.fcs:        
             x = fc(x)
+        # print('before x 2: ',x.shape)
         x = self.activation(x)
+        # print('after x 2: ',x.shape)
         # x = F.gelu(x)
         x = self.fco(x)
         x = x.view(batch_size).unsqueeze(-1)
@@ -505,7 +522,7 @@ def main(args):
     # Training
     lrmonitor_cb = LearningRateMonitor(logging_interval="step")
     checkpoint_cb = ModelCheckpoint(
-        monitor="valid_loss" if args.validation else "train_loss",
+        monitor="val_loss" if args.validation else "train_loss",
         mode="min",
         filename="best"
     )
@@ -513,7 +530,7 @@ def main(args):
     logger = WandbLogger(
         config=args, 
         project="Compression",
-        name='comp'+args.first_activation+'/'+args.dataset
+        name='comp/'+args.first_activation+'/'+args.dataset
     )
 
     logger.experiment.log(
@@ -526,7 +543,7 @@ def main(args):
 
     trainer = None
     if not args.notraining:
-        strategy = pl.strategies.DDPStrategy(process_group_backend="nccl", find_unused_parameters=False)
+        strategy = pl.strategies.DDPStrategy(process_group_backend="nccl", find_unused_parameters=True)
         trainer = pl.Trainer(log_every_n_steps=1, callbacks=[lrmonitor_cb, checkpoint_cb], logger = logger, accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
         # trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
         trainer.fit(model)
@@ -553,6 +570,7 @@ def main(args):
     
 if __name__ == "__main__":
     parser = ArgumentParser()
+    parser.add_argument('--max_order', default=3, type=int)
     parser.add_argument('--dataset', default='ERA5', type=str)
     parser.add_argument('--validation', default=True, type=bool)
     parser.add_argument('--first_activation', default='gelu', type=str)
@@ -593,6 +611,9 @@ if __name__ == "__main__":
     parser.add_argument('--notraining', action='store_true')
     parser.add_argument('--quantizing', action='store_true')
     args = parser.parse_args()
+    
+    # wandb.init(config=args, project="NNCompression", name='comp/'+args.first_activation+'/'+args.dataset)
+    wandb.init(config=args)
     if args.all:
         args.use_batchnorm = True
         args.use_invscale = not args.use_stat

@@ -19,7 +19,7 @@ class SineLayer(nn.Module):
     
     def __init__(
             self, 
-            omega=10.0,
+            omega=0.01,
             **kwargs,
         ):
         super().__init__()

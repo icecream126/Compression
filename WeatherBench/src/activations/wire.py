@@ -24,17 +24,25 @@ class ComplexGaborLayer(nn.Module):
             trainable: If True, omega and sigma are trainable parameters
     '''
     
-    def __init__(self, bias=True,omega0=10.0, sigma0=10.0,
+    def __init__(self, is_first=True, input_dim=5, width = 512, bias=True,omega0=10.0, sigma0=10.0,
                  trainable=False):
         super().__init__()
+        self.is_first = is_first
         self.omega_0 = omega0
         self.scale_0 = sigma0
+        if self.is_first==True:
+            self.input_dim = input_dim
+        else:
+            self.input_dim = width
+        self.out_dim = width
         
         # self.in_features = in_feature
             
         # Set trainable parameters if they are to be simultaneously optimized
         # self.omega_0 = nn.Parameter(self.omega_0*torch.ones(1), trainable)
         # self.scale_0 = nn.Parameter(self.scale_0*torch.ones(1), trainable)
+        # self.freqs = nn.Linear(self.input_dim, self.out_dim)
+        # self.scale = nn.Linear(self.input_dim, self.out_dim)
         
         # self.linear = nn.Linear(in_features,
         #                         out_features,
@@ -46,4 +54,7 @@ class ComplexGaborLayer(nn.Module):
         omega = self.omega_0 * input
         scale = self.scale_0 * input
         
-        return torch.exp(1j*omega - scale.abs().square()).real
+        freq_term = torch.cos(omega)
+        gauss_term = torch.exp(-(scale**2))
+        
+        return freq_term * gauss_term
