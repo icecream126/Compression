@@ -3,3 +3,4 @@ lightning_logs/
 wandb/
 *.pyc
 *.nc
+NNCompression/
