@@ -3,10 +3,10 @@ from torch import nn
 from math import ceil
 
 from .relu import ReLULayer
-import sys
-sys.path.append('/home/khm/NNCompression/WeatherBench/src')
-from utils.spherical_harmonics import get_spherical_harmonics
-from utils.change_coord_sys import to_spherical
+# import sys
+# sys.path.append('/home/khm/NNCompression/WeatherBench/src')
+from WeatherBench.src.utils.spherical_harmonics import get_spherical_harmonics
+from WeatherBench.src.utils.change_coord_sys import to_spherical
 
 class SphericalHarmonicsLayer(nn.Module):
     def __init__(
