@@ -24,12 +24,12 @@ class ComplexGaborLayer(nn.Module):
             trainable: If True, omega and sigma are trainable parameters
     '''
     
-    def __init__(self, is_first=True, input_dim=5, width = 512, bias=True,omega0=10.0, sigma0=10.0,
+    def __init__(self, is_first=True, input_dim=5, width = 512, bias=True,omega=10.0, sigma=10.0,
                  trainable=False):
         super().__init__()
         self.is_first = is_first
-        self.omega_0 = omega0
-        self.scale_0 = sigma0
+        self.omega_0 = omega
+        self.scale_0 = sigma
         if self.is_first==True:
             self.input_dim = input_dim
         else:

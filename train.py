@@ -208,14 +208,32 @@ class InvScale(nn.Module):
         return (z_normalized / factor)*std + mean
 
 class ResBlock(nn.Module):
-    def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True):
+    def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None):
         super(ResBlock, self).__init__()
+        # self.is_shinr = is_shinr
+        # self.shinr_layer_index = shinr_layer_index
+        self.width = width
+        # self.input_dim = input_dim
+        # if self.shinr_layer_index==0:
+        #     self.fc1 = nn.Linear(input_dim, input_dim, bias=False)
+        #     self.fc2 = nn.Linear(input_dim, input_dim, bias=True)
+        # elif self.shinr_layer_index==1:
+        #     self.fc1 = nn.Linear(input_dim, width, bias=False)
+        #     self.fc2 = nn.Linear(width, width, bias=True)
+        # else:
         self.fc1 = nn.Linear(width, width, bias=False)
         self.fc2 = nn.Linear(width, width, bias=True)
         self.use_batchnorm = use_batchnorm
         self.use_skipconnect = use_skipconnect
         self.activation = activation
         if use_batchnorm:
+            # if self.shinr_layer_index==0:
+            #     self.bn1 = nn.BatchNorm1d(input_dim)
+            #     self.bn2 = nn.BatchNorm1d(input_dim)
+            # elif self.shinr_layer_index==1:
+            #     self.bn1 = nn.BatchNorm1d(input_dim)
+            #     self.bn2 = nn.BatchNorm1d(width)
+            # else:
             self.bn1 = nn.BatchNorm1d(width)
             self.bn2 = nn.BatchNorm1d(width)
 
@@ -223,7 +241,6 @@ class ResBlock(nn.Module):
         # x shape: (batch_size, width)
         x = x_original
         if self.use_batchnorm:
-
             x = self.bn1(x)
         x = self.activation(x)
         # x = F.gelu(x)
@@ -271,9 +288,11 @@ class FitNet(nn.Module):
         # elif args.first_activation=='relu':
         #     self.first_activation = nn.
         if args.first_activation=='swinr':
-            self.first_activation = activation_dict[args.first_activation](width = args.width)
+            self.first_activation = activation_dict[args.first_activation](width = args.width, omega=args.omega, sigma = args.sigma)
         elif args.first_activation=='wire':
-            self.first_activation = activation_dict[args.first_activation](width = args.width, is_first=True)
+            self.first_activation = activation_dict[args.first_activation](width = args.width, is_first=True, omega = args.omega, sigma = args.sigma)
+        elif args.first_activation=='siren':
+            self.first_activation = activation_dict[args.first_activation](width = args.width, is_first=True, omega = args.omega)
         elif args.first_activation=='shinr':
             self.first_activation = activation_dict[args.first_activation](max_order = args.max_order)
             args.width = (args.max_order+1)**2
@@ -281,7 +300,7 @@ class FitNet(nn.Module):
             self.first_activation = activation_dict[args.first_activation]()
         
         if args.activation=='wire': 
-            self.activation = activation_dict[args.activation](is_first=False)
+            self.activation = activation_dict[args.activation](is_first=False, omega = args.omega, sigma= args.sigma)
         else:
             self.activation = activation_dict[args.activation]()
             
@@ -299,15 +318,24 @@ class FitNet(nn.Module):
             ne = 0
         # args.use_fourierfeature=False
         if args.use_fourierfeature:
-            self.fourierfeature_t = FourierFeature(args.sigma, 1, args.ntfeature)
-            self.fourierfeature_p = FourierFeature(args.sigma, 1, args.nfeature)
-            self.fourierfeature_s = FourierFeature(args.sigma, ns, args.nfeature)
+            self.fourierfeature_t = FourierFeature(args.f_sigma, 1, args.ntfeature)
+            self.fourierfeature_p = FourierFeature(args.f_sigma, 1, args.nfeature)
+            self.fourierfeature_s = FourierFeature(args.f_sigma, ns, args.nfeature)
             nf = 2*(2*args.nfeature + args.ntfeature)
         else:
             nf = 2 + ns
         self.normalize = NormalizeInput(args.tscale, args.zscale)     
         self.depth = args.depth
         self.fci = nn.Linear(nf + ne, args.width)
+        # if args.first_activation=='shinr':
+        #     self.fcs = nn.ModuleList()
+        #     for i in range(args.depth):
+        #         if i==0 or i==1: 
+        #             self.fcs.append(ResBlock(args.width, self.activation, args.use_batchnorm, args.use_skipconnect, shinr_layer_index=i, input_dim=(args.max_order+1)**2))
+        #         else:
+        #             self.fcs.append(ResBlock(args.width, self.activation, args.use_batchnorm, args.use_skipconnect))
+                
+        # else:
         self.fcs = nn.ModuleList([ResBlock(args.width, self.activation, args.use_batchnorm, args.use_skipconnect) for i in range(args.depth)])
         self.fco = nn.Linear(args.width, 1)
 
@@ -381,6 +409,7 @@ class FitNetModule(pl.LightningModule):
         return dataloader
         
     def configure_optimizers(self):
+        # print('wandb args learning_rate : ',args.learning_rate)
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.learning_rate)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.25, patience=10000)
         sched = {
@@ -533,9 +562,9 @@ def main(args):
         name='comp/'+args.first_activation+'/'+args.dataset
     )
 
-    logger.experiment.log(
-        {"CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", None)}
-    )
+    # logger.experiment.log(
+    #     {"CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", None)}
+    # )
     
     if args.ckpt_path != "":
         model_loaded = FitNetModule.load_from_checkpoint(args.ckpt_path)
@@ -570,6 +599,8 @@ def main(args):
     
 if __name__ == "__main__":
     parser = ArgumentParser()
+    parser.add_argument('--omega', default=0.1, type=float)
+    parser.add_argument('--sigma', default=3.0, type=float)
     parser.add_argument('--max_order', default=3, type=int)
     parser.add_argument('--dataset', default='ERA5', type=str)
     parser.add_argument('--validation', default=True, type=bool)
@@ -580,8 +611,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=3, type=int)
     parser.add_argument("--num_workers", default=1, type=int)
     parser.add_argument("--learning_rate", default=3e-4, type=float)
+    parser.add_argument("--f_sigma", default=1.6, type=float)
     parser.add_argument("--accumulate_grad_batches", default=1, type=int)
-    parser.add_argument("--sigma", default=1.6, type=float)
     parser.add_argument("--nfeature", default=128, type=int)
     parser.add_argument("--ntfeature", default=16, type=int)
     parser.add_argument("--width", default=512, type=int)
@@ -620,4 +651,5 @@ if __name__ == "__main__":
         args.use_skipconnect = True
         args.use_xyztransform = True
         args.use_fourierfeature = False
+    # print('args.learning_rate ; ',args.learning_rate)
     main(args)
