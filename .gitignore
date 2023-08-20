@@ -4,3 +4,5 @@ wandb/
 *.pyc
 *.nc
 NNCompression/
+*.out
+*.sh
