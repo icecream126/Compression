@@ -8,9 +8,11 @@ from WeatherBench.src.utils.change_coord_sys import to_cartesian
 class SphericalGaborLayer(nn.Module):
     def __init__(
             self, 
+            input_dim=1,
             width=512,
             omega=0.01,
             sigma=0.1,
+            tpdim=2,
             **kwargs,
         ):
         super().__init__()
@@ -18,6 +20,7 @@ class SphericalGaborLayer(nn.Module):
         self.omega = omega
         self.sigma = sigma
         self.out_dim = width
+        self.tpdim = tpdim
 
         self.dilate = nn.Parameter(torch.empty(1, self.out_dim))
         nn.init.normal_(self.dilate)
@@ -29,17 +32,11 @@ class SphericalGaborLayer(nn.Module):
         nn.init.uniform_(self.v)
         nn.init.uniform_(self.w)
 
-        self.linear_t = nn.Linear(1, self.out_dim)
-        self.linear_p = nn.Linear(1, self.out_dim)
+        self.linear_tp = nn.Linear(self.tpdim, self.out_dim)
 
     def forward(self, input):
-        # theta = input[...,2:3]
-        # phi = input[...,3:4]
-        # points = to_cartesian(theta, phi)
-        points = input[...,2:]
-
-        zeros = torch.zeros(self.out_dim, device=points.device)
-        ones = torch.ones(self.out_dim, device=points.device)
+        zeros = torch.zeros(self.out_dim, device=self.u.device)
+        ones = torch.ones(self.out_dim, device=self.u.device)
 
         alpha = 2*pi*self.u
         beta = torch.arccos(torch.clamp(2*self.v-1, -1+1e-6, 1-1e-6))
@@ -72,6 +69,7 @@ class SphericalGaborLayer(nn.Module):
         
         R = torch.bmm(torch.bmm(Rz_gamma, Rx_beta), Rz_alpha)
 
+        points = input[...,-3:]
         points = torch.matmul(R, points.unsqueeze(-2).unsqueeze(-1))
         points = points.squeeze(-1)
 
@@ -79,27 +77,18 @@ class SphericalGaborLayer(nn.Module):
 
         dilate = torch.exp(self.dilate)
 
-        arg = 4 * dilate * dilate * (1-z) / (1e-6+1+z)
+        freq_arg = 2 * dilate * x / (1e-6+1+z)
+        gauss_arg = 4 * dilate * dilate * (1-z) / (1e-6+1+z)
 
-        freq_term = torch.exp(1j*2*self.omega*dilate*x/(1e-6+1+z))
-        gauss_term = torch.exp(-self.sigma*self.sigma*arg)
+        time_pressure = input[..., :-3]
+        lin_tp = self.linear_tp(time_pressure)
+        freq_arg = freq_arg + lin_tp
+        gauss_arg = gauss_arg + lin_tp * lin_tp
 
-        out = freq_term * gauss_term
-
-        time = input[..., 0:1]
-        pressure = input[..., 1:2]
-        lin_t = self.linear_t(time)
-        lin_p = self.linear_p(time)
+        freq_term = torch.cos(self.omega*freq_arg)
+        gauss_term = torch.exp(-self.sigma*self.sigma*gauss_arg)
         
-        omega_t = self.omega * lin_t
-        sigma_t = self.sigma * lin_t
-        omega_p = self.omega * lin_p
-        sigma_p = self.sigma * lin_p
-        time_term = torch.exp(1j*omega_t - sigma_t.square())
-        pressure_term = torch.exp(1j*omega_p - sigma_p.square())
-        out = out.squeeze(2)
-        out = out * time_term * pressure_term
-        return out.real
+        return freq_term * gauss_term
     
 
 class INR(nn.Module):

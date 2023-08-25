@@ -19,12 +19,12 @@ class SineLayer(nn.Module):
     
     def __init__(
             self, 
-            omega=0.01,
+            omega0=0.01,
             **kwargs,
         ):
         super().__init__()
 
-        self.omega = omega
+        self.omega0 = omega0
         # self.is_first = is_first
         
         # self.input_dim = input_dim
@@ -39,4 +39,4 @@ class SineLayer(nn.Module):
         #                                      np.sqrt(6 / self.input_dim) / self.omega)
         
     def forward(self, input):
-        return torch.sin(self.omega * input)
+        return torch.sin(self.omega0 * input)

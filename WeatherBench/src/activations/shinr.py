@@ -3,8 +3,6 @@ from torch import nn
 from math import ceil
 
 from .relu import ReLULayer
-# import sys
-# sys.path.append('/home/khm/NNCompression/WeatherBench/src')
 from WeatherBench.src.utils.spherical_harmonics import get_spherical_harmonics
 from WeatherBench.src.utils.change_coord_sys import to_spherical
 
@@ -13,25 +11,23 @@ class SphericalHarmonicsLayer(nn.Module):
             self, 
             max_order, 
             omega=10,
+            tpdim=2,
             **kwargs,
         ):
         super().__init__()
         self.max_order = max_order
         self.hidden_dim = (max_order+1)**2
         self.omega = omega
+        self.tpdim = tpdim
 
-        self.linear_t = nn.Linear(1, self.hidden_dim)
-        self.linear_p = nn.Linear(1, self.hidden_dim)
+        self.linear_tp = nn.Linear(self.tpdim, self.hidden_dim)
         with torch.no_grad():
-            self.linear_t.weight.uniform_(-1, 1)
-            self.linear_p.weight.uniform_(-1, 1)
+            self.linear_tp.weight.uniform_(-1, 1)
         
     def forward(self, input):
-        points = to_spherical(input[...,2:])
+        points = to_spherical(input[...,-3:])
         theta, phi = points[...,0], points[...,1 ]
         
-
-
         sh_list = []
         for l in range(self.max_order+1):
             sh = get_spherical_harmonics(l, phi, theta)
@@ -39,15 +35,12 @@ class SphericalHarmonicsLayer(nn.Module):
 
         out = torch.cat(sh_list, dim=-1).squeeze(-2)
 
-        time = input[..., 0:1]
-        pressure = input[..., 1:2]
-        lin_t = self.linear_t(time)
-        lin_p = self.linear_p(pressure)
-        
-        omega_t = self.omega * lin_t
-        omega_p = self.omega * lin_p
+        time_pressure = input[..., :-3]
+        lin_tp = self.linear_tp(time_pressure)
+        omega_tp = self.omega * lin_tp
 
-        out = out * torch.sin(omega_t) * torch.sin(omega_p)
+        out = out * torch.sin(omega_tp)
+        
         return out
 
 class INR(nn.Module):
