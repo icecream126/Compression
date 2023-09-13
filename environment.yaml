@@ -1,8 +1,8 @@
-name: hm_comp2
+name: hm_comp
 channels:
-  - conda-forge
   - pytorch
   - nvidia
+  - conda-forge
   - conda-forge/label/cf202003
   - defaults
 dependencies:
@@ -16,6 +16,8 @@ dependencies:
   - cdsapi=0.1.6=py_0
   - certifi=2019.11.28=py38h32f6830_1
   - cffi=1.15.1=py38h5eee18b_3
+  - charset-normalizer=3.1.0=pyhd8ed1ab_0
+  - colorama=0.4.6=pyhd8ed1ab_0
   - cryptography=39.0.1=py38h9ce1e76_0
   - cuda=11.6.1=0
   - cuda-cccl=11.6.55=hf6102b2_0
@@ -115,116 +117,81 @@ dependencies:
   - ncurses=6.4=h6a678d5_0
   - nettle=3.7.3=hbbd107a_1
   - nsight-compute=2023.1.1.4=0
+  - numpy=1.24.3=py38hf6e8229_1
   - numpy-base=1.24.3=py38h060ed82_1
+  - olefile=0.46=pyh9f0ad1d_1
   - openh264=2.1.1=h4ff587b_0
   - openssl=1.1.1v=h7f8727e_0
+  - packaging=23.1=pyhd8ed1ab_0
+  - pandas=1.4.2=py38h47df419_1
   - pcre2=10.42=hebb0a14_0
   - perl=5.32.1=2_h7f98852_perl5
+  - pillow=7.0.0=py38h9776b28_1
+  - pip=23.1.2=pyhd8ed1ab_0
   - pycparser=2.21=pyhd3eb1b0_0
   - pyinterp=0.1.0=py38h97f2665_0
   - pyopenssl=23.0.0=py38h06a4308_0
   - pysocks=1.7.1=py38h06a4308_0
   - python=3.8.16=h7a1cb2a_3
+  - python-dateutil=2.8.2=pyhd8ed1ab_0
   - python_abi=3.8=1_cp38
   - pytorch=1.13.1=py3.8_cuda11.6_cudnn8.3.2_0
   - pytorch-cuda=11.6=h867d48c_1
   - pytorch-mutex=1.0=cuda
+  - pytz=2023.3=pyhd8ed1ab_0
   - readline=8.2=h5eee18b_0
+  - requests=2.31.0=pyhd8ed1ab_0
+  - setuptools=67.7.2=pyhd8ed1ab_0
+  - six=1.16.0=pyh6c4a22f_0
   - sqlite=3.41.2=h5eee18b_0
   - tbb=2021.8.0=hdb19cb5_0
   - tk=8.6.12=h1ccaba5_0
   - tmux=3.3a=h5eee18b_0
   - torchaudio=0.13.1=py38_cu116
   - torchvision=0.14.1=py38_cu116
+  - tqdm=4.65.0=pyhd8ed1ab_1
   - typing_extensions=4.6.3=py38h06a4308_0
   - urllib3=1.26.16=py38h06a4308_0
+  - wheel=0.40.0=pyhd8ed1ab_0
+  - xarray=2023.1.0=pyhd8ed1ab_0
   - xz=5.4.2=h5eee18b_0
   - zlib=1.2.13=h5eee18b_0
   - zstd=1.5.5=hc292b87_0
   - pip:
-      - absl-py==1.4.0
-      - aiohttp==3.8.4
-      - aiosignal==1.3.1
-      - async-timeout==4.0.2
-      - attrs==23.1.0
-      - cachetools==5.3.1
-      - chardet==5.1.0
-      - charset-normalizer==3.1.0
-      - click==8.1.3
-      - cycler==0.11.0
-      - docker-pycreds==0.4.0
-      - fonttools==4.39.4
-      - frozenlist==1.3.3
-      - fsspec==2023.6.0
-      - fuzzywuzzy==0.18.0
-      - getgfs==1.0.0
-      - gitdb==4.0.10
-      - gitpython==3.1.31
-      - google-auth==2.19.1
-      - google-auth-oauthlib==1.0.0
-      - grpcio==1.54.2
-      - imageio==2.14.1
-      - imageio-ffmpeg==0.4.8
-      - importlib-metadata==6.6.0
-      - joblib==1.2.0
-      - kaleido==0.2.1
-      - kiwisolver==1.4.4
-      - markdown==3.4.3
-      - markupsafe==2.1.3
-      - matplotlib==3.5.1
-      - multidict==6.0.4
-      - networkx==2.6.3
-      - nose==1.3.7
-      - numpy==1.23.1
-      - oauthlib==3.2.2
-      - packaging==23.1
-      - pandas==1.4.0
-      - pathtools==0.1.2
-      - pillow==9.5.0
-      - pip==23.1.2
-      - plotly==5.5.0
-      - promise==2.3
-      - protobuf==3.19.6
-      - psutil==5.9.5
-      - pyasn1==0.5.0
-      - pyasn1-modules==0.3.0
-      - pydeprecate==0.3.2
-      - pygeodesic==0.1.8
-      - pygsp==0.5.1
-      - pymesh2==0.3
-      - pyparsing==3.0.9
-      - python-dateutil==2.8.2
-      - pytorch-lightning==1.6.0
-      - pytz==2023.3
-      - pywavelets==1.4.1
-      - pyyaml==6.0
-      - regex==2023.6.3
-      - requests==2.31.0
-      - requests-oauthlib==1.3.1
-      - rsa==4.9
-      - scikit-image==0.19.1
-      - scikit-learn==1.0.2
-      - scipy==1.7.3
-      - sentry-sdk==1.25.1
-      - setuptools==59.5.0
-      - shortuuid==1.0.11
-      - six==1.16.0
-      - smmap==5.0.0
-      - tenacity==8.2.2
-      - tensorboard==2.13.0
-      - tensorboard-data-server==0.7.0
-      - termcolor==2.3.0
-      - threadpoolctl==3.1.0
-      - tifffile==2023.4.12
-      - torch==1.10.1
-      - torch-harmonics==0.6.1
-      - torchmetrics==0.7.1
-      - tqdm==4.62.3
-      - wandb==0.12.10
-      - werkzeug==2.3.6
-      - wheel==0.40.0
-      - xarray==0.21.1
-      - yarl==1.9.2
-      - yaspin==2.3.0
-      - zipp==3.15.0
-prefix: /compuworks/anaconda3/envs/hm_comp2
+    - aiohttp==3.8.5
+    - aiosignal==1.3.1
+    - appdirs==1.4.4
+    - async-timeout==4.0.3
+    - attrs==23.1.0
+    - click==8.1.7
+    - contourpy==1.1.0
+    - cycler==0.11.0
+    - docker-pycreds==0.4.0
+    - fonttools==4.42.1
+    - frozenlist==1.4.0
+    - fsspec==2023.6.0
+    - gitdb==4.0.10
+    - gitpython==3.1.32
+    - importlib-metadata==6.8.0
+    - importlib-resources==6.0.1
+    - kiwisolver==1.4.5
+    - lightning-utilities==0.9.0
+    - llvmlite==0.40.1
+    - matplotlib==3.7.2
+    - multidict==6.0.4
+    - numba==0.57.1
+    - pathtools==0.1.2
+    - protobuf==4.24.2
+    - psutil==5.9.5
+    - pyparsing==3.0.9
+    - pytorch-lightning==1.9.0
+    - pyyaml==6.0.1
+    - scipy==1.10.1
+    - sentry-sdk==1.29.2
+    - setproctitle==1.3.2
+    - smmap==5.0.0
+    - torchmetrics==1.1.0
+    - wandb==0.15.9
+    - yarl==1.9.2
+    - zipp==3.16.2
+prefix: /home/guest_sky/.conda/envs/hm_comp

@@ -17,12 +17,14 @@ from scipy.interpolate import RegularGridInterpolator
 from tqdm import trange, tqdm
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.utilities import rank_zero_only
 
 from WeatherBench.src.activations.swinr import SphericalGaborLayer
 from WeatherBench.src.activations.wire import ComplexGaborLayer
 from WeatherBench.src.activations.siren import SineLayer
 from WeatherBench.src.activations.shinr import SphericalHarmonicsLayer
 from WeatherBench.src.utils.loss import compute_weighted_mae, compute_weighted_rmse, compute_weighted_mse, compute_quantile_ae, compute_max_ae
+from WeatherBench.src.utils.visualize import plt_error_map, plt_error_map_test
 import sys, os
 import wandb
 
@@ -117,11 +119,13 @@ class WeatherBenchDataset_sampling(Dataset):
         return coord, var, mean, std
         
 class ERA5Dataset_sampling(Dataset):
+    # dataset = ERA5Dataset_sampling(self.args.file_name, self.args.data_path, 2677*9, 361*120, variable=self.args.variable)
     def __init__(self, file_name, data_path, nbatch, nsample, variable="z", stat_config=None):
         file_path = f"{data_path}/{file_name}"
         self.ds = xr.open_dataset(file_path)[variable].load()#{"time": 20}
-        self.ds = self.ds.assign_coords(time=self.ds.time.dt.dayofyear-1)
-        self.interpolator = pyinterp.backends.xarray.Grid4D(self.ds)
+        self.ds = self.ds.assign_coords(time=self.ds.time.dt.dayofyear-1) # (366, 11, 361, 720)
+        # this inputs raw xarray and this outputs axis organized GRID 4D (x : longitude / y : latitude / z : time / u : pressure)
+        self.interpolator = pyinterp.backends.xarray.Grid4D(self.ds) 
         self.variable = variable
         self.ntime = len(self.ds.time)
         self.nbatch = nbatch
@@ -135,42 +139,55 @@ class ERA5Dataset_sampling(Dataset):
         #assert len(sample_block_size) == 3 # np, nlat, nlon
 
     def __len__(self):
-        return self.nbatch
+        return self.nbatch # 24093
 
     def __getitem__(self, idx):
         if isinstance(idx, int):
-            rnds = self.rndeng.draw(self.nsample)
-            time = rnds[:, 0] * (self.ntime - 1)
+            # rnds[:,0] min, max : tensor(8.8131e-06) tensor(1.0000)
+            # rnds[:,1] min, max : tensor(1.0652e-05) tensor(1.0000)
+            # rnds[:,2] min, max : tensor(2.0703e-06) tensor(1.0000)
+            # time      min, max : tensor(0.0032) tensor(364.9950)
+            # pind      min, max : tensor(10.) tensor(1000.)
+            # latind    min, max : tensor(-89.5058) tensor(89.6262)
+            # lonind    min, max : tensor(0.0007) tensor(359.9936)
+            
+            rnds = self.rndeng.draw(self.nsample) # self.nsample : 43320, rnds : torch.Size(43320, 3)
+            time = rnds[:, 0] * (self.ntime - 1) # Sobolev sequence에 time을 곱한다는 것은 sampling을 하는 느낌
             #pind = (torch.rand((self.nsample,)) * (1000-10) + 10)
+            # self.ds.level : <xarray.DataArray 'level' (level:11)>
+            # array([ 10, 50, 100, 200, 300, 400, 500, 700, 850, 925, 1000])
+            # torch.randperm(self.nsample) % len(self.ds.level) (sample 수만큼 Randperm하면 최대 43320까지의 범위내에서 randperm이 되는데 이거를 level의 범위로 나눠줌으로써 0부터 10까지의 범위로 randmperm됨 )
+            # 각 sample에 대한 pind를 갖고 오는 것 같음
             pind = torch.as_tensor(np.array(self.ds.level), dtype=torch.float32)[torch.randperm(self.nsample) % len(self.ds.level)]
             # latind = (torch.rand((self.nsample,)) * 180 - 90)
             # http://corysimon.github.io/articles/uniformdistn-on-sphere/
             # mean_lat_weight = self.mean_lat_weight
             latind = 90 - 180/math.pi*torch.acos(1 - 2 * rnds[:, 1])
             lonind = (rnds[:, 2] * 360)
-            coord = torch.stack((time, pind, latind, lonind), dim=-1)
+            coord = torch.stack((time, pind, latind, lonind), dim=-1) # torch.Size([43320,4])
             var_sampled = self.interpolator.quadrivariate(
                 dict(longitude=lonind.ravel(),
                      latitude=latind.ravel(),
                      time=time.ravel(),
                      level=pind.ravel())).reshape(latind.shape)
-            var_sampled = torch.as_tensor(var_sampled).unsqueeze(-1)
+            var_sampled = torch.as_tensor(var_sampled).unsqueeze(-1) #torch.Size([43320,1])
             if self.stat is None:
-                return coord, var_sampled# , mean_lat_weight
+                return coord, var_sampled # torch.Size([43320,4]), torch.Size([43320,1])
             else:
                 mean, std = self.stat.interp_regular(pind, latind, lonind)
                 return coord, var_sampled, mean, std# , mean_lat_weight
 
     def getslice(self, tind, pind):
-        lat_v = torch.as_tensor(np.array(self.ds.latitude))
-        lon_v = torch.as_tensor(np.array(self.ds.longitude))
+        lat_v = torch.as_tensor(np.array(self.ds.latitude)) # 361
+        lon_v = torch.as_tensor(np.array(self.ds.longitude)) # 720
         lat, lon = torch.meshgrid((lat_v, lon_v), indexing="ij")
-        p = torch.zeros_like(lat) + np.array(self.ds.level)[pind]
-        t = torch.zeros_like(lat) + float(tind)
-        coord = torch.stack((t, p, lat, lon), dim=-1).to(torch.float32)
-        var = torch.as_tensor(np.array(self.ds.isel(time=tind, level=pind))).to(torch.float32).unsqueeze(-1)
+        p = torch.zeros_like(lat) + np.array(self.ds.level)[pind] # torch.zeros_like (lat) : shape (361,720)의 tensor에다가 pind의 어떤 pressure 값을 전부 더해줌 (즉, (361, 720) dimension의 pressure 값 생성)
+        t = torch.zeros_like(lat) + float(tind) 
+        coord = torch.stack((t, p, lat, lon), dim=-1).to(torch.float32) # (361, 720, 4)
+        # self.ds.isel(time=tind, level=pind) # (361, 720) (전체 (366, 11, 361, 720) dim의 data에서 해당하는 time, pressure의 지점을 뽑아온듯)
+        var = torch.as_tensor(np.array(self.ds.isel(time=tind, level=pind))).to(torch.float32).unsqueeze(-1) # (361, 720, 1)
         # mean_lat_weight = self.mean_lat_weight
-        return coord.unsqueeze(0), var.unsqueeze(0)# , mean_lat_weight
+        return coord.unsqueeze(0), var.unsqueeze(0)# coord.unsqueeze(0) : (1, 361, 720, 4) / var.unsqueeze(0) : (1, 361, 720, 1)
 
 class FourierFeature(nn.Module):
     def __init__(self, sigma, infeature, outfeature):
@@ -186,15 +203,16 @@ class FourierFeature(nn.Module):
     
 class LonLat2XYZ(nn.Module):
     def forward(self, x):
-        # x shape: (..., (time, pressure, lat, lon))
+        # x shape: torch.Size([1,361, 720, 4])
+        # time, p, lat, lon .shape : torch.Size([1,361, 720])
         time = x[..., 0]
         p = x[..., 1]
-        lat = x[..., 2]
-        lon = x[..., 3]
-        sinlat = torch.sin(lat)
-        coslat = torch.cos(lat)
-        sinlon = torch.sin(lon)
-        coslon = torch.cos(lon)
+        lat = x[..., 2] # min(-1.5708), max(1.5708)
+        lon = x[..., 3] # min(0), max(6.2745)
+        sinlat = torch.sin(lat) # min(-1), max(1)
+        coslat = torch.cos(lat) # min(-4.3711e-08), max(1)
+        sinlon = torch.sin(lon) # min(-1), max(1)
+        coslon = torch.cos(lon) # min(-1), max(1)
         return torch.stack((time, p, sinlat, coslat*sinlon, coslat*coslon), dim=-1)
     
 class NormalizeInput(nn.Module):
@@ -212,6 +230,62 @@ class InvScale(nn.Module):
         mean = 4.315e5-6.15e4*torch.log(p)
         return (z_normalized / factor)*std + mean
 
+# class ResBlock(nn.Module):
+#     def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None, depth=None, first_activation=None):
+#         super(ResBlock, self).__init__()
+#         self.width = width
+#         self.wavelet_dim = width
+#         self.fc1 = nn.Linear(width, width, bias=False)
+#         self.fc2 = nn.Linear(width, width, bias=True)
+#         self._fc1 = nn.Linear(self.wavelet_dim, width, bias=False)
+#         self.use_batchnorm = use_batchnorm
+#         self.use_skipconnect = use_skipconnect
+#         self.activation = activation
+#         self.depth = depth
+#         self.first_activation=first_activation
+#         if use_batchnorm:
+#             self._bn1 = nn.BatchNorm1d(self.wavelet_dim)
+#             self.bn1 = nn.BatchNorm1d(width)
+#             self.bn2 = nn.BatchNorm1d(width)
+
+#     def forward(self, x_original):
+#         # x shape: (batch_size, width)
+#         if self.depth==0:
+#             x = x_original
+#             if self.use_batchnorm:
+#                 if self.first_activation=='swinr':
+#                     x = self._bn1(x)
+#                 else:
+#                     x = self.bn1(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             if self.first_activation == 'swinr':
+#                 x = self._fc1(x)
+#             else:
+#                 x = self.fc1(x)
+#             if self.use_batchnorm:
+#                 x = self.bn2(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             x = self.fc2(x)
+
+#             return x
+#         else:
+#             x = x_original
+#             if self.use_batchnorm:
+#                 x = self.bn1(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             x = self.fc1(x)
+#             if self.use_batchnorm:
+#                 x = self.bn2(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             x = self.fc2(x)
+#             if self.use_skipconnect:
+#                 return x + x_original
+#             else:
+#                 return x
 class ResBlock(nn.Module):
     def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None):
         super(ResBlock, self).__init__()
@@ -298,9 +372,9 @@ class FitNet(nn.Module):
         # First activation
         if args.first_activation=='swinr':
             if args.use_fourierfeature:
-                self.first_activation = activation_dict[args.first_activation](tpdim = nf - ns, width = args.width, omega=args.omega, sigma = args.sigma)
+                self.first_activation = activation_dict[args.first_activation](tpdim = nf - ns, width = args.wavelet_dim, omega=args.omega, sigma = args.sigma, mode = args.swinr_mode)
             else:
-                self.first_activation = activation_dict[args.first_activation](width = args.width, omega=args.omega, sigma = args.sigma)
+                self.first_activation = activation_dict[args.first_activation](width = args.wavelet_dim, omega=args.omega, sigma = args.sigma, mode = args.swinr_mode)
         elif args.first_activation=='wire':
             self.first_activation = activation_dict[args.first_activation](width = args.width, is_first=True, omega = args.omega, sigma = args.sigma)
         elif args.first_activation=='siren':
@@ -322,27 +396,25 @@ class FitNet(nn.Module):
             
         
         self.fci = nn.Linear(nf + ne, args.width)
-        # if args.first_activation=='shinr':
-        #     self.fcs = nn.ModuleList()
-        #     for i in range(args.depth):
-        #         if i==0 or i==1: 
-        #             self.fcs.append(ResBlock(args.width, self.activation, args.use_batchnorm, args.use_skipconnect, shinr_layer_index=i, input_dim=(args.max_order+1)**2))
-        #         else:
-        #             self.fcs.append(ResBlock(args.width, self.activation, args.use_batchnorm, args.use_skipconnect))
-                
-        # else:
-        self.fcs = nn.ModuleList([ResBlock(args.width, self.activation, args.use_batchnorm, args.use_skipconnect) for i in range(args.depth)])
+        #     def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None, depth=None, first_activation=None):
+        # self.fcs = nn.ModuleList([ResBlock(width = args.width, activation = self.activation, use_batchnorm = args.use_batchnorm, use_skipconnect = args.use_skipconnect, depth = i, first_activation = args.first_activation) for i in range(args.depth)])
+        self.fcs = nn.ModuleList([ResBlock(width = args.width, activation = self.activation, use_batchnorm = args.use_batchnorm, use_skipconnect = args.use_skipconnect) for i in range(args.depth)])
+        
         self.fco = nn.Linear(args.width, 1)
 
-        self.use_xyztransform = self.args.use_xyztransform
+        if args.first_activation == 'shinr':
+            self.use_xyztransform = False
+        else:
+            self.use_xyztransform = True
+        
         self.use_fourierfeature = self.args.use_fourierfeature
         self.use_tembedding = self.args.use_tembedding 
         self.use_invscale = self.args.use_invscale
 
     def forward(self, coord):
         # coord.shape : torch.Size([1, 361, 720, 4])
-        batch_size = coord.shape[:-1] # torch.Size([1, 361, 720])
-        x = self.normalize(coord) # torch.Size([1, 361, 720, 5])
+        batch_size = coord.shape[:-1] # 4
+        x = self.normalize(coord) # torch.Size([1, 361, 720, 4])
         if self.use_xyztransform:
             x = self.lonlat2xyz(x)
         if self.use_fourierfeature:
@@ -358,9 +430,14 @@ class FitNet(nn.Module):
         if self.use_tembedding:
             x = torch.cat((self.embed_t(coord[..., 0:1]), x), dim=-1)
         
+
         if args.first_activation=='siren' or args.first_activation=='relu' or args.first_activation=='gelu' or args.first_activation=='wire':
-            x = self.fci(x) # torch.Size([1,361,720,5]) -> torch.Size([1, 361, 720, 64])
+            x = self.fci(x) # torch.Size([1,361,720,5 / 544]) -> torch.Size([1, 361, 720, 64])
         # print('before x : ',x.shape)
+        # print('coord lat shape : ',x[...,2:3].shape)
+        # print('lat : ',x[...,2:3])
+        # print('lon : ',x[...,3:])
+        
         x = self.first_activation(x)
         # print('after x : ',x.shape)
         # x = F.gelu(self.fci(x))
@@ -381,22 +458,32 @@ class FitNet(nn.Module):
     
 class FitNetModule(pl.LightningModule):
     # sigma=1.5, omega=30., nfeature=256, width=512, depth=4, tscale=60.0, zscale=100., learning_rate=1e-3, batch_size=3
-    def __init__(self, args):
+    def __init__(self, args, logger):
         super(FitNetModule, self).__init__()
         self.save_hyperparameters()
         self.args = args
         self.model = FitNet(args)#torch.jit.script(FitNet(args))
         self.input_type = torch.float32
+        self.last_training_pred = None
+        self.last_valid_pred = None
         
-
+        self.last_training_input = None
+        self.last_valid_input = None
+        
+        self.last_training_target = None
+        self.last_valid_target = None
+        
+        self.mylogger = logger
         
     def train_dataloader(self):
         if self.args.dataloader_mode == "sampling_nc":
             dataset = ERA5Dataset_sampling(self.args.file_name, self.args.data_path, 2677*9, 361*120, variable=self.args.variable)
         elif self.args.dataloader_mode == "weatherbench":
             dataset = WeatherBenchDataset_sampling(self.args.file_name, self.args.data_path, 2677*9, 361*120, variable=self.args.variable)
+        # dataset[0][0],dataset[1][0] : torch.Size([43320, 4])
+        # dataset[0][1],dataset[1][1] : torch.Size([43320, 1])
         dataloader = DataLoader(dataset, batch_size=self.args.batch_size, shuffle=False, num_workers=self.args.num_workers, pin_memory=True, prefetch_factor=8)
-        return dataloader
+        return dataloader # len(dataloader) : 8031
     
     def val_dataloader(self):
         # TODO: use xarray unstack?
@@ -436,8 +523,8 @@ class FitNetModule(pl.LightningModule):
     def forward(self, x):
         return self.model(x)
     
-    
     def training_step(self, batch, batch_idx):
+        # check if var shape is torch.Size([361, 720]) since delta of test is torch.Size([361, 720])
         if self.args.use_stat:
             coord, var, mean, std = batch
             #print(coord.mean(), var.mean(), mean.mean(), std.mean())
@@ -445,11 +532,15 @@ class FitNetModule(pl.LightningModule):
         else:
             coord, var = batch
             var_pred = self(coord)
+        self.last_training_pred = var_pred
+        self.last_training_input = coord
+        self.last_training_pred = var_pred
+        self.last_training_target = var
         lat = coord[..., 2:3] / 180. * math.pi
         p = coord[..., 1:2]
         assert var.shape == var_pred.shape
         assert var.shape == lat.shape
-        delta = var_pred - var
+        delta = var_pred - var # check the shape of delta shape if it is  [361, 720]
         delta_abs = torch.abs(delta)
         loss_linf = delta_abs.max()
         loss_l1 = delta_abs.mean()
@@ -519,6 +610,9 @@ class FitNetModule(pl.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
+        # batch[0] : torch.Size([1,361,720,4])
+        # batch[1] : torch.Size([1,361,720,1])
+        
         with torch.no_grad():
             if self.args.use_stat:
                 coord, var, mean, std = batch
@@ -526,6 +620,9 @@ class FitNetModule(pl.LightningModule):
             else:
                 coord, var = batch
                 var_pred = self(coord)
+                
+            self.last_valid_pred = var_pred
+            self.last_valid_input = coord
             lat = coord[..., 2:3] / 180. * math.pi
             assert var.shape == var_pred.shape
             assert var.shape == lat.shape
@@ -542,54 +639,129 @@ class FitNetModule(pl.LightningModule):
             plt.title(f'p={torch.mean(coord[..., 1]).item()}')
             plt.colorbar(fraction=0.02, pad=0.04)
             if self.trainer.is_global_zero:
-                self.log("val_loss", val_loss, rank_zero_only=True)
-                self.log("val_loss_l2", val_loss_l2, rank_zero_only=True)
+                self.log("val_loss", val_loss, rank_zero_only=True, sync_dist=True)
+                self.log("val_loss_l2", val_loss_l2, rank_zero_only=True, sync_dist=True)
                 # self.log("weighted_rmse", compute_weighted_rmse(var_pred, var, lat, mean_lat_weight))
                 # self.log("weighted_mae", compute_weighted_mae(var_pred, var, lat, mean_lat_weight))
                 # self.log("weighted_mae", compute_weighted_mse(var_pred, var, lat, mean_lat_weight))
                 
-                self.log("val_weighted_rmse", compute_weighted_rmse(delta, lat))
-                self.log("val_weighted_mse", compute_weighted_mse(delta, lat))
-                self.log("val_weighted_mae", compute_weighted_mae(delta, lat))
-                self.log("val_quantile_ae", compute_quantile_ae(delta, lat))
-                self.log("val_max_ae", compute_max_ae(delta, lat))
+                self.log("val_weighted_rmse", compute_weighted_rmse(delta, lat), rank_zero_only=True, sync_dist=True)
+                self.log("val_weighted_mse", compute_weighted_mse(delta, lat), rank_zero_only=True, sync_dist=True)
+                self.log("val_weighted_mae", compute_weighted_mae(delta, lat), rank_zero_only=True, sync_dist=True)
+                self.log("val_quantile_ae", compute_quantile_ae(delta, lat), rank_zero_only=True, sync_dist=True)
+                self.log("val_max_ae", compute_max_ae(delta, lat), rank_zero_only=True, sync_dist=True)
 
-def test_on_wholedataset(file_name, data_path, output_path, output_file, model, device="cuda", variable="z"):
+    def on_train_epoch_end(self):
+        my_id = None
+        if self.trainer.global_rank==0:
+            my_id = self.mylogger.experiment.id
+            # print('plotting error map')
+            plt_error_map(self.model, self.current_epoch, self.mylogger, self.mylogger.experiment.id)
+            # print('finish plotting')
+            if self.args.first_activation=='swinr':
+                coord = torch.tensor(np.load('./coord.npy'), device='cuda')
+                coord = self.model.lonlat2xyz(coord)
+                self.model.first_activation(coord, visualize=True, current_epoch = self.current_epoch, mode='train', run_id = self.mylogger.experiment.id)
+    
+        # if my_id:  
+        #     with torch.no_grad():
+        #         plt_error_map(self.model, self.mylogger, my_id)
+                  
+        # # visualize first_activation of swinr
+        # with torch.no_grad():
+        #     if self.args.first_activation == 'swinr':
+        #         input = self.model.lonlat2xyz(self.last_training_input)
+        #         # save wavelet visualization
+        #         self.model.first_activation(input, visualize=True, current_epoch = self.current_epoch, mode='train', run_id = logger.experiment.name)
+        #         # save error map visualization
+        #         plt_error_map(input, self.last_training_pred, self.last_training_target, current_epoch = self.current_epoch, mode='train', run_id = wandb.run.id)
+            
+def test_on_wholedataset(quantized_size, file_name, data_path, output_path, output_file, model, device="cuda", variable="z", logger=None):
+    
+    # plt_error_map(model, 'test')
+    lonlat2xyz = LonLat2XYZ()
     ds = xr.open_dataset(f"{data_path}/{file_name}")
-    ds_pred = xr.zeros_like(ds[variable]) - 9999
+    ds_pred = xr.zeros_like(ds[variable]) - 9999 # (361, 720, 1)
     ds = ds.assign_coords(time=ds.time.dt.dayofyear-1)
-    dtype = model.input_type
-    lat = torch.tensor(np.array(ds.latitude), dtype=dtype, device=device)
+    dtype = model.input_type # torch.float32
+    lat = torch.tensor(np.array(ds.latitude), dtype=dtype, device=device) # min, max : -90, 90
     lon = torch.tensor(np.array(ds.longitude), dtype=dtype, device=device)
-    ps = np.array(ds.level).astype(float)
-    ts = np.array(ds.time).astype(float)
+    ps = np.array(ds.level).astype(float) # (11,) min: 10.0 / max : 1000.0
+    ts = np.array(ds.time).astype(float) # (366, ) min : 0.0 / max : 365.0
     model = model.to(device)
     max_error = np.zeros(ps.shape[0])
+    weighted_rmse = np.zeros((ts.shape[0], ps.shape[0]))
+    weighted_mse = np.zeros((ts.shape[0], ps.shape[0]))
+    weighted_mae = np.zeros((ts.shape[0], ps.shape[0]))
+    quantile_ae = np.zeros((ts.shape[0], ps.shape[0]))
     for i in trange(ts.shape[0]):
         for j in range(ps.shape[0]):
             ti = float(ts[i])
             pj = float(ps[j])
             t = torch.tensor([ti], dtype=dtype, device=device)
             p = torch.tensor([pj], dtype=dtype, device=device)
-            coord = torch.stack(torch.meshgrid(t, p, lat, lon, indexing="ij"), dim=-1).squeeze(0).squeeze(0)
+            coord = torch.stack(torch.meshgrid(t, p, lat, lon, indexing="ij"), dim=-1).squeeze(0).squeeze(0) # check if (361, 720, 4)
             with torch.no_grad():
-                var_pred = model(coord)
+                var_pred = model(coord) 
                 ds_pred.data[i, j, :, :] = var_pred.cpu().numpy().squeeze(-1)
-                max_error[j] = max(max_error[j], np.abs(ds_pred.data[i, j, :, :] - ds[variable][i, j, :, :]).max())
-    print(np.array_repr(max_error))
-    for j in range(ps.shape[0]):
-        wandb.log({'p-'+str(pj)+'-'+str(j)+'_max_mae': max_error[j]})
-    # wandb.log({'sum_max_mae':np.sum(max_error)})
-    wandb.log({'entire_avg_max_mae':np.mean(max_error)})
-    wandb.log({'entire_max_max_mae':np.max(max_error)})
+                delta = np.array(ds_pred.data[i, j, :, :] - ds[variable][i, j, :, :])
+                max_error[j] = max(max_error[j], np.abs(delta).max())
+                lat_vec = coord[:,:,2]
+                lon_vec = coord[:,:,3]
+                delta = torch.tensor(delta, device=device)
+                weighted_rmse[i][j] = compute_weighted_rmse(delta, lat_vec)
+                weighted_mse[i][j] = compute_weighted_mse(delta, lat_vec)
+                weighted_mae[i][j] = compute_weighted_mae(delta, lat_vec)
+                quantile_ae[i][j] = compute_quantile_ae(delta, lat_vec)
+                if i==0:
+                    plt_error_map_test(torch.deg2rad(lat_vec), torch.deg2rad(lon_vec), delta, int(pj), logger)
+                
+
+    avg_weighted_rmse = np.mean(weighted_rmse,axis=0)
+    avg_weighted_mse = np.mean(weighted_mse,axis=0)
+    avg_weighted_mae = np.mean(weighted_mae,axis=0)
+    avg_quantile_ae = np.mean(quantile_ae,axis=0)
+    first_activation = str(model.args.first_activation)
+    model_size = str(quantized_size)
+    run_id = str(logger.experiment.id)
+    data_path = '/'+first_activation+'_'+model_size+'_'+run_id
+
+    np.save('./weighted_rmse'+data_path,weighted_rmse)
+    np.save('./weighted_mse'+data_path,weighted_mse)
+    np.save('./weighted_mae'+data_path,weighted_mae)
+    np.save('./quantile_mae'+data_path,quantile_ae)
+    np.save('./max_ae'+data_path,np.array(max_error))
     
-    # Metric
-    delta = torch.tensor(ds_pred.data - np.array(ds[variable]), device=device)
-    wandb.log({"entire_weighted_rmse" : compute_weighted_rmse(delta, lat)})
-    wandb.log({"entire_weighted_mse" : compute_weighted_mse(delta, lat)})
-    wandb.log({"entire_weighted_mae" : compute_weighted_mae(delta, lat)})
-    # wandb.log({"test_quantile_ae" : compute_quantile_ae(delta, lat)})
-    wandb.log({"entire_max_ae" : compute_max_ae(delta, lat)})
+    logger.experiment.define_metric("test_max_ae", step_metric='custom_step')
+    logger.experiment.define_metric("test_weighted_rmse", step_metric='custom_step')
+    logger.experiment.define_metric("test_weighted_mae", step_metric='custom_step')
+    logger.experiment.define_metric("test_weighted_mse", step_metric='custom_step')
+    logger.experiment.define_metric("test_quantile_ae", step_metric='custom_step')
+    for j in range(ps.shape[0]):
+        log_dict={
+            "text_max_ae":max_error[j],
+            "test_weighted_rmse":avg_weighted_rmse[j],
+            "test_weighted_mae":avg_weighted_mae[j],
+            "test_weighted_mse":avg_weighted_mse[j],
+            "test_quantile_ae":avg_quantile_ae[j],
+        }
+        
+        logger.experiment.log(log_dict)
+        
+        
+        # logger.experiment.log({'test_max_ae': max_error[j],'pressure': ps[j]})
+        # logger.experiment.log({'test_weighted_rmse': avg_weighted_rmse[j],'pressure': ps[j] })
+        # logger.experiment.log({'test_weighted_mae': avg_weighted_mae[j],'pressure': ps[j] })
+        # logger.experiment.log({'test_weighted_mse': avg_weighted_mse[j],'pressure': ps[j]})
+        # logger.experiment.log({'test_quantile_ae': avg_quantile_ae[j],'pressure': ps[j]})
+        
+        # wandb.log({'test_max_ae': max_error[j],'pressure': ps[j]})
+        # wandb.log({'test_weighted_rmse': avg_weighted_rmse[j],'pressure': ps[j] })
+        # wandb.log({'test_weighted_mae': avg_weighted_mae[j],'pressure': ps[j] })
+        # wandb.log({'test_weighted_mse': avg_weighted_mse[j],'pressure': ps[j]})
+        # wandb.log({'test_quantile_ae': avg_quantile_ae[j],'pressure': ps[j]})
+        
+
     ds_pred.to_netcdf(f"{output_path}/{output_file}")
 
 def generate_outputs(model, output_path, output_file, device="cuda"):
@@ -598,8 +770,6 @@ def generate_outputs(model, output_path, output_file, device="cuda"):
     variable = model.args.variable #"z"
     ds = xr.open_mfdataset(f"{data_path}/{file_name}").load()
     out_ds = xr.zeros_like(ds)
-    #mean = float(ds[variable].mean())
-    #std = float(ds[variable].max() - ds[variable].min())
     mean = np.array(ds[variable].mean(dim=["time"]))
     std = (ds[variable].max(dim=["time"]) - np.array(ds[variable].min(dim=["time"])))
     assert len(ds[variable].shape) == 3
@@ -623,7 +793,6 @@ def generate_outputs(model, output_path, output_file, device="cuda"):
     print(errors.max())
 
 def main(args):
-    model = FitNetModule(args)
     
     # Training
     lrmonitor_cb = LearningRateMonitor(logging_interval="step")
@@ -632,17 +801,17 @@ def main(args):
         mode="min",
         filename="best"
     )
+    # wandb.finish()
 
     logger = WandbLogger(
         config=args, 
-        project="Compression",
-        name='comp/'+args.first_activation+'/'+args.dataset
+        project="final_compression",
+        name='comp/'+args.first_activation+'/'+args.dataset,
     )
-
-    # logger.experiment.log(
-    #     {"CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", None)}
-    # )
     
+    model = FitNetModule(args, logger)
+
+
     if args.ckpt_path != "":
         model_loaded = FitNetModule.load_from_checkpoint(args.ckpt_path)
         model.model.load_state_dict(model_loaded.model.state_dict())
@@ -650,24 +819,29 @@ def main(args):
     trainer = None
     if not args.notraining:
         strategy = pl.strategies.DDPStrategy(process_group_backend="nccl", find_unused_parameters=True)
-        trainer = pl.Trainer(log_every_n_steps=1, callbacks=[lrmonitor_cb, checkpoint_cb], logger = logger, accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
-        # trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
+        trainer = pl.Trainer(profiler='simple',accumulate_grad_batches=args.accumulate_grad_batches, logger=logger, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
+        # trainer = pl.Trainer(log_every_n_steps=1, callbacks=[lrmonitor_cb, checkpoint_cb], logger = logger, accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu",  min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)# 혹시 몰라서 해둔건데 사용 안할듯
+        # trainer = pl.Trainer(profiler='simple',accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
         trainer.fit(model)
 
     model.eval()
-    trainer.test(model)
+    # trainer.test(model)
     if (not trainer) or trainer.is_global_zero:
-            print("Model size (MB):", get_model_size_mb(model))
+            model_size=get_model_size_mb(model)
+            print("Model size (MB):", model_size)
+            # wandb.log({'model_size':model_size})
+            logger.experiment.log({'model_size': model_size})
 
     if args.quantizing:
         model.model.fcs = model.model.fcs.half()
         quantized_size = get_model_size_mb(model)
         model.model.fcs = model.model.fcs.float()
         print(f"Quantized (FP16) size (MB): {quantized_size}")
-        wandb.log({'quantized_size':quantized_size})
+        # wandb.log({'quantized_size':quantized_size})
+        logger.experiment.log({"quantized_size": quantized_size})
 
     if args.testing and ((not trainer) or trainer.is_global_zero):
-        test_on_wholedataset(model.args.file_name, model.args.data_path, model.args.output_path, model.args.output_file, model, variable=model.args.variable)
+        test_on_wholedataset(quantized_size, model.args.file_name, model.args.data_path, model.args.output_path, model.args.output_file, model, variable=model.args.variable, logger=logger)
 
     if args.generate_full_outputs and ((not trainer) or trainer.is_global_zero):
         generate_outputs(model, args.output_path, args.output_file)
@@ -677,6 +851,8 @@ def main(args):
     
 if __name__ == "__main__":
     parser = ArgumentParser()
+    parser.add_argument('--wavelet_dim', default=None, type=int)
+    parser.add_argument('--swinr_mode', default=None, type=str)
     parser.add_argument('--omega', default=0.1, type=float)
     parser.add_argument('--sigma', default=3.0, type=float)
     parser.add_argument('--max_order', default=3, type=int)
@@ -719,10 +895,11 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", default="output.nc", type=str)
     parser.add_argument('--notraining', action='store_true')
     parser.add_argument('--quantizing', action='store_true')
+    # parser.add_argument('--node_rank', default=0, type=int)
+    # parser.add_argument('--local_rank', default=0, type=int)
     args = parser.parse_args()
     
-    # wandb.init(config=args, project="NNCompression", name='comp/'+args.first_activation+'/'+args.dataset)
-    wandb.init(config=args)
+    # wandb.init(config=args)
     if args.all:
         args.use_batchnorm = True
         args.use_invscale = not args.use_stat
@@ -733,4 +910,5 @@ if __name__ == "__main__":
         else:
             args.use_fourierfeature = False
     # print('args.learning_rate ; ',args.learning_rate)
+
     main(args)

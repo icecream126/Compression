@@ -8,3 +8,12 @@ NNCompression/
 *.out
 *.sh
 _NNCompression/
+error_map/
+max_ae/
+quantile_mae/
+final_compression/
+wavelet_figure/
+weighted_mae/
+weighted_rmse/
+weighted_mse/
+coord.npy
