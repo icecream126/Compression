@@ -230,92 +230,99 @@ class InvScale(nn.Module):
         mean = 4.315e5-6.15e4*torch.log(p)
         return (z_normalized / factor)*std + mean
 
-# class ResBlock(nn.Module):
-#     def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None, depth=None, first_activation=None):
-#         super(ResBlock, self).__init__()
-#         self.width = width
-#         self.wavelet_dim = width
-#         self.fc1 = nn.Linear(width, width, bias=False)
-#         self.fc2 = nn.Linear(width, width, bias=True)
-#         self._fc1 = nn.Linear(self.wavelet_dim, width, bias=False)
-#         self.use_batchnorm = use_batchnorm
-#         self.use_skipconnect = use_skipconnect
-#         self.activation = activation
-#         self.depth = depth
-#         self.first_activation=first_activation
-#         if use_batchnorm:
-#             self._bn1 = nn.BatchNorm1d(self.wavelet_dim)
-#             self.bn1 = nn.BatchNorm1d(width)
-#             self.bn2 = nn.BatchNorm1d(width)
-
-#     def forward(self, x_original):
-#         # x shape: (batch_size, width)
-#         if self.depth==0:
-#             x = x_original
-#             if self.use_batchnorm:
-#                 if self.first_activation=='swinr':
-#                     x = self._bn1(x)
-#                 else:
-#                     x = self.bn1(x)
-#             x = self.activation(x)
-#             # x = F.gelu(x)
-#             if self.first_activation == 'swinr':
-#                 x = self._fc1(x)
-#             else:
-#                 x = self.fc1(x)
-#             if self.use_batchnorm:
-#                 x = self.bn2(x)
-#             x = self.activation(x)
-#             # x = F.gelu(x)
-#             x = self.fc2(x)
-
-#             return x
-#         else:
-#             x = x_original
-#             if self.use_batchnorm:
-#                 x = self.bn1(x)
-#             x = self.activation(x)
-#             # x = F.gelu(x)
-#             x = self.fc1(x)
-#             if self.use_batchnorm:
-#                 x = self.bn2(x)
-#             x = self.activation(x)
-#             # x = F.gelu(x)
-#             x = self.fc2(x)
-#             if self.use_skipconnect:
-#                 return x + x_original
-#             else:
-#                 return x
+# This ResBlock is customized version which doesn't perform skipconnection for the first layer
+# To tune wavelet_dim hyperparameter, we need to do this.
 class ResBlock(nn.Module):
-    def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None):
+    def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None, depth=None, first_activation=None):
         super(ResBlock, self).__init__()
         self.width = width
+        self.wavelet_dim = width
         self.fc1 = nn.Linear(width, width, bias=False)
         self.fc2 = nn.Linear(width, width, bias=True)
+        self._fc1 = nn.Linear(self.wavelet_dim, width, bias=False)
         self.use_batchnorm = use_batchnorm
         self.use_skipconnect = use_skipconnect
         self.activation = activation
+        self.depth = depth
+        self.first_activation=first_activation
         if use_batchnorm:
+            self._bn1 = nn.BatchNorm1d(self.wavelet_dim)
             self.bn1 = nn.BatchNorm1d(width)
             self.bn2 = nn.BatchNorm1d(width)
 
     def forward(self, x_original):
         # x shape: (batch_size, width)
-        x = x_original
-        if self.use_batchnorm:
-            x = self.bn1(x)
-        x = self.activation(x)
-        # x = F.gelu(x)
-        x = self.fc1(x)
-        if self.use_batchnorm:
-            x = self.bn2(x)
-        x = self.activation(x)
-        # x = F.gelu(x)
-        x = self.fc2(x)
-        if self.use_skipconnect:
-            return x + x_original
-        else:
+        # If first layer, no skip connection
+        # And adjust batchnorm layer shape
+        if self.depth==0:
+            x = x_original
+            if self.use_batchnorm:
+                if self.first_activation=='swinr':
+                    x = self._bn1(x)
+                else:
+                    x = self.bn1(x)
+            x = self.activation(x)
+            # x = F.gelu(x)
+            if self.first_activation == 'swinr':
+                x = self._fc1(x)
+            else:
+                x = self.fc1(x)
+            if self.use_batchnorm:
+                x = self.bn2(x)
+            x = self.activation(x)
+            # x = F.gelu(x)
+            x = self.fc2(x)
+
             return x
+        # If not first layer, do skip connection
+        else:
+            x = x_original
+            if self.use_batchnorm:
+                x = self.bn1(x)
+            x = self.activation(x)
+            # x = F.gelu(x)
+            x = self.fc1(x)
+            if self.use_batchnorm:
+                x = self.bn2(x)
+            x = self.activation(x)
+            # x = F.gelu(x)
+            x = self.fc2(x)
+            if self.use_skipconnect:
+                return x + x_original
+            else:
+                return x
+
+
+# class ResBlock(nn.Module):
+#     def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None):
+#         super(ResBlock, self).__init__()
+#         self.width = width
+#         self.fc1 = nn.Linear(width, width, bias=False)
+#         self.fc2 = nn.Linear(width, width, bias=True)
+#         self.use_batchnorm = use_batchnorm
+#         self.use_skipconnect = use_skipconnect
+#         self.activation = activation
+#         if use_batchnorm:
+#             self.bn1 = nn.BatchNorm1d(width)
+#             self.bn2 = nn.BatchNorm1d(width)
+
+#     def forward(self, x_original):
+#         # x shape: (batch_size, width)
+#         x = x_original
+#         if self.use_batchnorm:
+#             x = self.bn1(x)
+#         x = self.activation(x)
+#         # x = F.gelu(x)
+#         x = self.fc1(x)
+#         if self.use_batchnorm:
+#             x = self.bn2(x)
+#         x = self.activation(x)
+#         # x = F.gelu(x)
+#         x = self.fc2(x)
+#         if self.use_skipconnect:
+#             return x + x_original
+#         else:
+#             return x
 
 class MultiResolutionEmbedding(nn.Module):
     def __init__(self, feature_size, nfeature, tresolution, tscale):
@@ -433,21 +440,12 @@ class FitNet(nn.Module):
 
         if args.first_activation=='siren' or args.first_activation=='relu' or args.first_activation=='gelu' or args.first_activation=='wire':
             x = self.fci(x) # torch.Size([1,361,720,5 / 544]) -> torch.Size([1, 361, 720, 64])
-        # print('before x : ',x.shape)
-        # print('coord lat shape : ',x[...,2:3].shape)
-        # print('lat : ',x[...,2:3])
-        # print('lon : ',x[...,3:])
-        
+
         x = self.first_activation(x)
-        # print('after x : ',x.shape)
-        # x = F.gelu(self.fci(x))
         x = x.flatten(end_dim=-2) # batchnorm 1d only accepts (N, C) shape
         for fc in self.fcs:        
             x = fc(x)
-        # print('before x 2: ',x.shape)
         x = self.activation(x)
-        # print('after x 2: ',x.shape)
-        # x = F.gelu(x)
         x = self.fco(x)
         x = x.view(batch_size).unsqueeze(-1)
         if self.use_invscale or self.args.use_stat:
@@ -551,8 +549,6 @@ class FitNetModule(pl.LightningModule):
             loss = loss_l2
         elif self.args.loss_type == "logsumexp":
             loss = torch.logsumexp(torch.abs(delta))
-        elif self.args.loss_type == 'weighted_mse':
-            loss = compute_weighted_mse(delta, lat)
 
         # self.log("train_weighted_mse", loss)
         #self.log("train_loss"+self.args.loss_type, loss)
@@ -569,45 +565,7 @@ class FitNetModule(pl.LightningModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        # return self.training_step(batch, batch_idx)
-        if self.args.use_stat:
-            coord, var, mean, std = batch
-            #print(coord.mean(), var.mean(), mean.mean(), std.mean())
-            var_pred = self(coord) * 0.5 * 1.4 * std + mean
-        else:
-            coord, var = batch
-            var_pred = self(coord)
-        lat = coord[..., 2:3] / 180. * math.pi
-        p = coord[..., 1:2]
-        assert var.shape == var_pred.shape
-        assert var.shape == lat.shape
-        delta = var_pred - var
-        delta_abs = torch.abs(delta)
-        loss_linf = delta_abs.max()
-        loss_l1 = delta_abs.mean()
-        loss_l2 = delta.pow(2).mean()
-        if self.args.loss_type == "scaled_mse":
-            loss = (delta/(11 - torch.log(p))).pow(2).mean()
-        elif self.args.loss_type == "mse":
-            loss = loss_l2
-        elif self.args.loss_type == "logsumexp":
-            loss = torch.logsumexp(torch.abs(delta))
-        elif self.args.loss_type == 'weighted_mse':
-            loss = compute_weighted_mse(delta, lat)
-
-        # self.log("train_weighted_mse", loss)
-        #self.log("train_loss"+self.args.loss_type, loss)
-        self.log("test_loss_l2", loss_l2)
-        self.log("test_loss_l1", loss_l1)
-        self.log("test_loss_linf", loss_linf)
-        # self.log("train_weighted_rmse", compute_weighted_rmse(var_pred, var, lat, mean_lat_weight))
-        self.log("test_weighted_rmse", compute_weighted_rmse(delta, lat))
-        self.log("test_weighted_mse", compute_weighted_mse(delta, lat))
-        self.log("test_weighted_mae", compute_weighted_mae(delta, lat))
-        self.log("test_quantile_ae", compute_quantile_ae(delta, lat))
-        self.log("test_max_ae", compute_max_ae(delta, lat))
-        # self.log("weighted_acc", compute_weighted_acc(var_pred, var))
-        return loss
+        return self.training_step(batch, batch_idx)
     
     def validation_step(self, batch, batch_idx):
         # batch[0] : torch.Size([1,361,720,4])
@@ -651,35 +609,11 @@ class FitNetModule(pl.LightningModule):
                 self.log("val_quantile_ae", compute_quantile_ae(delta, lat), rank_zero_only=True, sync_dist=True)
                 self.log("val_max_ae", compute_max_ae(delta, lat), rank_zero_only=True, sync_dist=True)
 
-    def on_train_epoch_end(self):
-        my_id = None
-        if self.trainer.global_rank==0:
-            my_id = self.mylogger.experiment.id
-            # print('plotting error map')
-            plt_error_map(self.model, self.current_epoch, self.mylogger, self.mylogger.experiment.id)
-            # print('finish plotting')
-            if self.args.first_activation=='swinr':
-                coord = torch.tensor(np.load('./coord.npy'), device='cuda')
-                coord = self.model.lonlat2xyz(coord)
-                self.model.first_activation(coord, visualize=True, current_epoch = self.current_epoch, mode='train', run_id = self.mylogger.experiment.id)
-    
-        # if my_id:  
-        #     with torch.no_grad():
-        #         plt_error_map(self.model, self.mylogger, my_id)
-                  
-        # # visualize first_activation of swinr
-        # with torch.no_grad():
-        #     if self.args.first_activation == 'swinr':
-        #         input = self.model.lonlat2xyz(self.last_training_input)
-        #         # save wavelet visualization
-        #         self.model.first_activation(input, visualize=True, current_epoch = self.current_epoch, mode='train', run_id = logger.experiment.name)
-        #         # save error map visualization
-        #         plt_error_map(input, self.last_training_pred, self.last_training_target, current_epoch = self.current_epoch, mode='train', run_id = wandb.run.id)
             
 def test_on_wholedataset(quantized_size, file_name, data_path, output_path, output_file, model, device="cuda", variable="z", logger=None):
     
     # plt_error_map(model, 'test')
-    lonlat2xyz = LonLat2XYZ()
+    # lonlat2xyz = LonLat2XYZ()
     ds = xr.open_dataset(f"{data_path}/{file_name}")
     ds_pred = xr.zeros_like(ds[variable]) - 9999 # (361, 720, 1)
     ds = ds.assign_coords(time=ds.time.dt.dayofyear-1)
@@ -690,10 +624,7 @@ def test_on_wholedataset(quantized_size, file_name, data_path, output_path, outp
     ts = np.array(ds.time).astype(float) # (366, ) min : 0.0 / max : 365.0
     model = model.to(device)
     max_error = np.zeros(ps.shape[0])
-    weighted_rmse = np.zeros((ts.shape[0], ps.shape[0]))
-    weighted_mse = np.zeros((ts.shape[0], ps.shape[0]))
-    weighted_mae = np.zeros((ts.shape[0], ps.shape[0]))
-    quantile_ae = np.zeros((ts.shape[0], ps.shape[0]))
+    deltas = np.zeros((ts.shape[0], ps.shape[0]))
     for i in trange(ts.shape[0]):
         for j in range(ps.shape[0]):
             ti = float(ts[i])
@@ -706,63 +637,45 @@ def test_on_wholedataset(quantized_size, file_name, data_path, output_path, outp
                 ds_pred.data[i, j, :, :] = var_pred.cpu().numpy().squeeze(-1)
                 delta = np.array(ds_pred.data[i, j, :, :] - ds[variable][i, j, :, :])
                 max_error[j] = max(max_error[j], np.abs(delta).max())
-                lat_vec = coord[:,:,2]
-                lon_vec = coord[:,:,3]
-                delta = torch.tensor(delta, device=device)
-                weighted_rmse[i][j] = compute_weighted_rmse(delta, lat_vec)
-                weighted_mse[i][j] = compute_weighted_mse(delta, lat_vec)
-                weighted_mae[i][j] = compute_weighted_mae(delta, lat_vec)
-                quantile_ae[i][j] = compute_quantile_ae(delta, lat_vec)
-                if i==0:
-                    plt_error_map_test(torch.deg2rad(lat_vec), torch.deg2rad(lon_vec), delta, int(pj), logger)
                 
-
-    avg_weighted_rmse = np.mean(weighted_rmse,axis=0)
-    avg_weighted_mse = np.mean(weighted_mse,axis=0)
-    avg_weighted_mae = np.mean(weighted_mae,axis=0)
-    avg_quantile_ae = np.mean(quantile_ae,axis=0)
-    first_activation = str(model.args.first_activation)
-    model_size = str(quantized_size)
-    run_id = str(logger.experiment.id)
-    data_path = '/'+first_activation+'_'+model_size+'_'+run_id
-
-    np.save('./weighted_rmse'+data_path,weighted_rmse)
-    np.save('./weighted_mse'+data_path,weighted_mse)
-    np.save('./weighted_mae'+data_path,weighted_mae)
-    np.save('./quantile_mae'+data_path,quantile_ae)
-    np.save('./max_ae'+data_path,np.array(max_error))
+    print(np.array_repr(max_error))
+    ds_pred.to_netcdf(f"{output_path}/{output_file}") # Save to output file
     
-    logger.experiment.define_metric("test_max_ae", step_metric='custom_step')
-    logger.experiment.define_metric("test_weighted_rmse", step_metric='custom_step')
-    logger.experiment.define_metric("test_weighted_mae", step_metric='custom_step')
-    logger.experiment.define_metric("test_weighted_mse", step_metric='custom_step')
-    logger.experiment.define_metric("test_quantile_ae", step_metric='custom_step')
-    for j in range(ps.shape[0]):
-        log_dict={
-            "text_max_ae":max_error[j],
-            "test_weighted_rmse":avg_weighted_rmse[j],
-            "test_weighted_mae":avg_weighted_mae[j],
-            "test_weighted_mse":avg_weighted_mse[j],
-            "test_quantile_ae":avg_quantile_ae[j],
-        }
-        
-        logger.experiment.log(log_dict)
-        
-        
-        # logger.experiment.log({'test_max_ae': max_error[j],'pressure': ps[j]})
-        # logger.experiment.log({'test_weighted_rmse': avg_weighted_rmse[j],'pressure': ps[j] })
-        # logger.experiment.log({'test_weighted_mae': avg_weighted_mae[j],'pressure': ps[j] })
-        # logger.experiment.log({'test_weighted_mse': avg_weighted_mse[j],'pressure': ps[j]})
-        # logger.experiment.log({'test_quantile_ae': avg_quantile_ae[j],'pressure': ps[j]})
-        
-        # wandb.log({'test_max_ae': max_error[j],'pressure': ps[j]})
-        # wandb.log({'test_weighted_rmse': avg_weighted_rmse[j],'pressure': ps[j] })
-        # wandb.log({'test_weighted_mae': avg_weighted_mae[j],'pressure': ps[j] })
-        # wandb.log({'test_weighted_mse': avg_weighted_mse[j],'pressure': ps[j]})
-        # wandb.log({'test_quantile_ae': avg_quantile_ae[j],'pressure': ps[j]})
-        
+    # Test
+    PATH_TO_REF = data_path+'/'+file_name
+    PATH_TO_DECOMPRESSED=output_path+'/'+output_file
+    
+    ds_ref = xr.open_dataset(PATH_TO_REF)
+    lat = ds_ref.latitude # or ds_ref.lat
+    weights_lat = np.cos(np.deg2rad(lat))
+    weights_lat /= weights_lat.mean()
+    ds_pred = xr.open_dataset(PATH_TO_DECOMPRESSED) # generated from `generate_outputs` or `test_on_wholedataset`
+    delta = np.abs(ds_pred[variable] - ds_ref[variable])
+    qs = np.quantile(delta.values, [1.0, 0.99999])
+    wrmse = float(np.sqrt((delta*delta*weights_lat).mean()))
+    wmae = float((delta*weights_lat).mean())
+    maxae = float((delta*weights_lat).max())
 
-    ds_pred.to_netcdf(f"{output_path}/{output_file}")
+    log_dict = {
+        "test_wrmse":wrmse,
+        "test_qs_0":qs[0],
+        "test_qs_1":qs[1],
+        "test_wmae":wmae,
+        "test_maxae":maxae
+    }
+    logger.experiment.log(log_dict)
+    # logger.experiment.log({"qs[0]": qs[0]})
+    # logger.experiment.log({"qs[1]": qs[1]})
+    # logger.experiment.log({"weighted_rmse": wrmse})
+    # logger.experiment.log({"weighted_mae": wmae})
+    # logger.experiment.log({"weighted_max_ae": maxae})
+    
+    print('OUTPUT PATH : ',PATH_TO_DECOMPRESSED)
+    print('qs[0] : ',qs[0])
+    print('qs[1] : ',qs[1])
+    print('wrmse : ',wrmse)
+    print('wmae : ',wmae)
+    print('maxae : ',maxae)
 
 def generate_outputs(model, output_path, output_file, device="cuda"):
     file_name = model.args.file_name
@@ -797,7 +710,7 @@ def main(args):
     # Training
     lrmonitor_cb = LearningRateMonitor(logging_interval="step")
     checkpoint_cb = ModelCheckpoint(
-        monitor="val_weighted_mse" if args.validation else "train_weighted_mse",
+        monitor="train_weighted_mse",
         mode="min",
         filename="best"
     )
@@ -819,9 +732,7 @@ def main(args):
     trainer = None
     if not args.notraining:
         strategy = pl.strategies.DDPStrategy(process_group_backend="nccl", find_unused_parameters=True)
-        trainer = pl.Trainer(profiler='simple',accumulate_grad_batches=args.accumulate_grad_batches, logger=logger, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
-        # trainer = pl.Trainer(log_every_n_steps=1, callbacks=[lrmonitor_cb, checkpoint_cb], logger = logger, accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu",  min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)# 혹시 몰라서 해둔건데 사용 안할듯
-        # trainer = pl.Trainer(profiler='simple',accumulate_grad_batches=args.accumulate_grad_batches, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
+        trainer = pl.Trainer(profiler='simple',callbacks=[lrmonitor_cb, checkpoint_cb], accumulate_grad_batches=args.accumulate_grad_batches, logger=logger, check_val_every_n_epoch=10, accelerator="gpu", auto_select_gpus=True, devices=args.num_gpu, strategy=strategy, min_epochs=10, max_epochs=args.nepoches, gradient_clip_val=0.5, sync_batchnorm=True)
         trainer.fit(model)
 
     model.eval()
@@ -895,8 +806,6 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", default="output.nc", type=str)
     parser.add_argument('--notraining', action='store_true')
     parser.add_argument('--quantizing', action='store_true')
-    # parser.add_argument('--node_rank', default=0, type=int)
-    # parser.add_argument('--local_rank', default=0, type=int)
     args = parser.parse_args()
     
     # wandb.init(config=args)
