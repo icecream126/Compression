@@ -27,6 +27,7 @@ from WeatherBench.src.utils.loss import compute_weighted_mae, compute_weighted_r
 from WeatherBench.src.utils.visualize import plt_error_map, plt_error_map_test
 import sys, os
 import wandb
+os.environ["CUDA_VISIBLE_DEVICES"]='0,1,2,3'
 
 
 
@@ -232,97 +233,97 @@ class InvScale(nn.Module):
 
 # This ResBlock is customized version which doesn't perform skipconnection for the first layer
 # To tune wavelet_dim hyperparameter, we need to do this.
-class ResBlock(nn.Module):
-    def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None, depth=None, first_activation=None):
-        super(ResBlock, self).__init__()
-        self.width = width
-        self.wavelet_dim = width
-        self.fc1 = nn.Linear(width, width, bias=False)
-        self.fc2 = nn.Linear(width, width, bias=True)
-        self._fc1 = nn.Linear(self.wavelet_dim, width, bias=False)
-        self.use_batchnorm = use_batchnorm
-        self.use_skipconnect = use_skipconnect
-        self.activation = activation
-        self.depth = depth
-        self.first_activation=first_activation
-        if use_batchnorm:
-            self._bn1 = nn.BatchNorm1d(self.wavelet_dim)
-            self.bn1 = nn.BatchNorm1d(width)
-            self.bn2 = nn.BatchNorm1d(width)
-
-    def forward(self, x_original):
-        # x shape: (batch_size, width)
-        # If first layer, no skip connection
-        # And adjust batchnorm layer shape
-        if self.depth==0:
-            x = x_original
-            if self.use_batchnorm:
-                if self.first_activation=='swinr':
-                    x = self._bn1(x)
-                else:
-                    x = self.bn1(x)
-            x = self.activation(x)
-            # x = F.gelu(x)
-            if self.first_activation == 'swinr':
-                x = self._fc1(x)
-            else:
-                x = self.fc1(x)
-            if self.use_batchnorm:
-                x = self.bn2(x)
-            x = self.activation(x)
-            # x = F.gelu(x)
-            x = self.fc2(x)
-
-            return x
-        # If not first layer, do skip connection
-        else:
-            x = x_original
-            if self.use_batchnorm:
-                x = self.bn1(x)
-            x = self.activation(x)
-            # x = F.gelu(x)
-            x = self.fc1(x)
-            if self.use_batchnorm:
-                x = self.bn2(x)
-            x = self.activation(x)
-            # x = F.gelu(x)
-            x = self.fc2(x)
-            if self.use_skipconnect:
-                return x + x_original
-            else:
-                return x
-
-
 # class ResBlock(nn.Module):
-#     def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None):
+#     def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None, depth=None, first_activation=None):
 #         super(ResBlock, self).__init__()
 #         self.width = width
+#         self.wavelet_dim = width
 #         self.fc1 = nn.Linear(width, width, bias=False)
 #         self.fc2 = nn.Linear(width, width, bias=True)
+#         self._fc1 = nn.Linear(self.wavelet_dim, width, bias=False)
 #         self.use_batchnorm = use_batchnorm
 #         self.use_skipconnect = use_skipconnect
 #         self.activation = activation
+#         self.depth = depth
+#         self.first_activation=first_activation
 #         if use_batchnorm:
+#             self._bn1 = nn.BatchNorm1d(self.wavelet_dim)
 #             self.bn1 = nn.BatchNorm1d(width)
 #             self.bn2 = nn.BatchNorm1d(width)
 
 #     def forward(self, x_original):
 #         # x shape: (batch_size, width)
-#         x = x_original
-#         if self.use_batchnorm:
-#             x = self.bn1(x)
-#         x = self.activation(x)
-#         # x = F.gelu(x)
-#         x = self.fc1(x)
-#         if self.use_batchnorm:
-#             x = self.bn2(x)
-#         x = self.activation(x)
-#         # x = F.gelu(x)
-#         x = self.fc2(x)
-#         if self.use_skipconnect:
-#             return x + x_original
-#         else:
+#         # If first layer, no skip connection
+#         # And adjust batchnorm layer shape
+#         if self.depth==0:
+#             x = x_original
+#             if self.use_batchnorm:
+#                 if self.first_activation=='swinr':
+#                     x = self._bn1(x)
+#                 else:
+#                     x = self.bn1(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             if self.first_activation == 'swinr':
+#                 x = self._fc1(x)
+#             else:
+#                 x = self.fc1(x)
+#             if self.use_batchnorm:
+#                 x = self.bn2(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             x = self.fc2(x)
+
 #             return x
+#         # If not first layer, do skip connection
+#         else:
+#             x = x_original
+#             if self.use_batchnorm:
+#                 x = self.bn1(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             x = self.fc1(x)
+#             if self.use_batchnorm:
+#                 x = self.bn2(x)
+#             x = self.activation(x)
+#             # x = F.gelu(x)
+#             x = self.fc2(x)
+#             if self.use_skipconnect:
+#                 return x + x_original
+#             else:
+#                 return x
+
+
+class ResBlock(nn.Module):
+    def __init__(self, width, activation, use_batchnorm=True, use_skipconnect=True, shinr_layer_index=None, input_dim=None):
+        super(ResBlock, self).__init__()
+        self.width = width
+        self.fc1 = nn.Linear(width, width, bias=False)
+        self.fc2 = nn.Linear(width, width, bias=True)
+        self.use_batchnorm = use_batchnorm
+        self.use_skipconnect = use_skipconnect
+        self.activation = activation
+        if use_batchnorm:
+            self.bn1 = nn.BatchNorm1d(width)
+            self.bn2 = nn.BatchNorm1d(width)
+
+    def forward(self, x_original):
+        # x shape: (batch_size, width)
+        x = x_original
+        if self.use_batchnorm:
+            x = self.bn1(x)
+        x = self.activation(x)
+        # x = F.gelu(x)
+        x = self.fc1(x)
+        if self.use_batchnorm:
+            x = self.bn2(x)
+        x = self.activation(x)
+        # x = F.gelu(x)
+        x = self.fc2(x)
+        if self.use_skipconnect:
+            return x + x_original
+        else:
+            return x
 
 class MultiResolutionEmbedding(nn.Module):
     def __init__(self, feature_size, nfeature, tresolution, tscale):
